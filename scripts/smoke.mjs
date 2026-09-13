@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 
-// Start npm run dev first. Use a system browser; no extra browser download is needed.
-const browser = await chromium.launch({headless:true, ...(process.env.BROWSER_EXECUTABLE ? {executablePath:process.env.BROWSER_EXECUTABLE} : {channel:'msedge'})});
+// Start npm run dev first. Use installed Chrome; no extra browser download is needed.
+const browser = await chromium.launch({headless:true, ...(process.env.BROWSER_EXECUTABLE ? {executablePath:process.env.BROWSER_EXECUTABLE} : {channel:'chrome'})});
 const page = await browser.newPage({viewport:{width:1440,height:1000}});
 const base = process.env.SMOKE_URL || 'http://localhost:3000';
 const errors=[];
