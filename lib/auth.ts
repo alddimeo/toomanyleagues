@@ -18,6 +18,8 @@ export async function requireUser() {
   const {data:{user},error} = await auth.auth.getUser();
   if (error || !user) throw new AppError('Please sign in.', 401);
   const allowed = (process.env.BETA_ALLOWED_EMAILS || '').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
-  if (!user.email || !allowed.includes(user.email.toLowerCase())) throw new AppError('This prototype is available to invited testers only.', 403);
+  if (!user.email || (allowed.length > 0 && !allowed.includes(user.email.toLowerCase()))) {
+    throw new AppError('This prototype is available to invited testers only.', 403);
+  }
   return user;
 }

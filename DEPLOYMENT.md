@@ -1,6 +1,6 @@
 # Deployment
 
-Target: Cloudflare Workers with OpenNext, Supabase Auth/Postgres, Yahoo OAuth, and Browserbase for ESPN connection. A public URL does not enable provider access until the services below are configured. Keep the tester allowlist during the first real-account checks.
+Target: Cloudflare Workers with OpenNext, Supabase Auth/Postgres, Yahoo OAuth, and Browserbase for ESPN connection. A public URL does not enable provider access until the services below are configured. Keep the tester allowlist during the first real-account checks, then remove it when the public beta is ready.
 
 ## Account access
 
@@ -21,7 +21,7 @@ Complete the browser authorization with the appropriate account. Reconnect/resta
 
 1. Run `supabase/migrations/202609130001_dashboard.sql`, then `supabase/tests/access.sql` in the selected project's SQL editor.
 2. Choose the final HTTPS deployment URL. For the first preview, use the `toomanyleagues.<your-subdomain>.workers.dev` address shown by Cloudflare. Set `APP_URL` to that exact origin.
-3. Add every value from `.env.example` to the Worker's environment using the Cloudflare dashboard. Store the service-role key, encryption key, Browserbase API key, and Yahoo client secret as secrets. Keep the encryption key stable. Set `BETA_ALLOWED_EMAILS` to your login email.
+3. Add every value from `.env.example` to the Worker's environment using the Cloudflare dashboard. Store the service-role key, encryption key, Browserbase API key, and Yahoo client secret as secrets. Keep the encryption key stable. Set `BETA_ALLOWED_EMAILS` to your login email for an invite-only beta, or leave it empty for authenticated public users.
 4. Configure Supabase Site URL and authentication redirects for that origin, following README's authentication setup. Configure Yahoo's exact callback as `https://YOUR_HOST/api/yahoo/callback`. Configure Browserbase credentials for ESPN.
 5. Run `npm run build:cloudflare`, then `npm run preview:cloudflare` for a local Workers runtime check. Run `npm run deploy:cloudflare` to publish the built app with authenticated Wrangler.
 6. Verify email sign-up/confirmation, sign-in/reset, then connect each provider and compare imported leagues with the source. Test a second account's isolation. The local parser/UI tests do not replace these real-service checks.

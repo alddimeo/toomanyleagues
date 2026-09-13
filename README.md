@@ -8,7 +8,7 @@ Private, read-only fantasy football prototype: Next.js/TypeScript, Supabase auth
 2. Copy `.env.example` to `.env.local` and fill in your service credentials. Generate a 32-byte base64 credential encryption key using the command in that file. Keep this key stable across deploys; losing it requires reconnecting providers.
 3. Create a Supabase project and run `supabase/migrations/202609130001_dashboard.sql` in its SQL editor. The data table and lock function are backend-only; even authenticated clients have no direct access. The server always scopes queries to the verified user ID.
 4. Configure Google and Apple providers in Supabase Auth. Register the Supabase callback URL shown in its provider settings with Google/Apple. Set Supabase Site URL to `APP_URL` and allow `${APP_URL}/auth/callback`. Apple web OAuth needs an Apple Developer account and renewal of its client secret at least every six months. Use the email actually returned by Apple (possibly a private relay address) in the beta allowlist.
-5. Set `BETA_ALLOWED_EMAILS` to the exact tester email addresses. Empty means nobody can access provider data; this is deliberately a private prototype.
+5. For an invite-only beta, set `BETA_ALLOWED_EMAILS` to exact tester email addresses. Leave it empty when authenticated users should be able to use the public site; league data remains private to each account.
 6. Create a Browserbase project and set its API key/project ID. Browser sessions have a ten-minute timeout, with recording, session logging, and automatic CAPTCHA solving disabled. Users complete ESPN login themselves in the hosted browser. Our service and Browserbase handle sensitive session state; this is not ESPN OAuth.
 7. Apply for Yahoo Fantasy API access for this public multi-user product, requesting read access. Register `${APP_URL}/api/yahoo/callback` as the exact redirect URI. Yahoo may require HTTPS: use an HTTPS development deployment/tunnel and set `APP_URL` consistently. Each user authorizes this one application; users do not register developer apps.
 8. Run `npm run dev`, visit `http://localhost:3000`, and sign in. Start ESPN login, finish it, then enter the numeric league ID and season. Yahoo connects through its own consent page and attempts league discovery/import; manual Yahoo keys have the form `461.l.12345` (game key changes by season).
@@ -29,7 +29,7 @@ In the **Reset password** template, use:
 <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery">Reset your password</a>
 ```
 
-The server verifies the one-time token and establishes an HTTP-only session before redirecting to the dashboard or password form. Configure production SMTP for public email delivery. Account creation does not bypass `BETA_ALLOWED_EMAILS`; add the tester's email before importing leagues.
+The server verifies the one-time token and establishes an HTTP-only session before redirecting to the dashboard or password form. Configure production SMTP for public email delivery. If `BETA_ALLOWED_EMAILS` is set, new accounts still need to be on that list before importing leagues.
 
 ## Verification
 
