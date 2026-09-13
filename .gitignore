@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env*
+!.env.example
+*.tsbuildinfo
+test-results/
+.open-next/
+.wrangler/
+.dev.vars*
+supabase/.temp/
