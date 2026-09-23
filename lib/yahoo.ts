@@ -24,6 +24,23 @@ const asText = (value: unknown): string | null => {
   return null;
 };
 
+function mediaUrl(value: unknown): string | undefined {
+  if (typeof value === 'string' && /^https?:\/\//i.test(value.trim()) && value.length <= 2048) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const result = mediaUrl(item);
+      if (result) return result;
+    }
+    return undefined;
+  }
+  if (!isObject(value)) return undefined;
+  for (const key of ['href', 'url', 'image_url', 'imageUrl']) {
+    const result = mediaUrl(value[key]);
+    if (result) return result;
+  }
+  return undefined;
+}
+
 const asNumber = (value: unknown): number | null => {
   const text = asText(value);
   if (!text) return null;
@@ -132,6 +149,14 @@ function firstField(value: unknown, ...paths: string[]): unknown {
   for (const path of paths) {
     const item = pathField(value, path);
     if (item !== undefined && item !== null) return item;
+  }
+  return undefined;
+}
+
+function mediaField(value: unknown, ...paths: string[]): string | undefined {
+  for (const path of paths) {
+    const result = mediaUrl(firstField(value, path));
+    if (result) return result;
   }
   return undefined;
 }
@@ -274,7 +299,7 @@ async function tokenRequest(body: URLSearchParams): Promise<YahooTokens> {
       'content-type': 'application/x-www-form-urlencoded',
     },
     body,
-    redirect: 'error',
+    redirect: 'manual',
   }, 'token');
 
   const accessToken = textField(data, 'access_token');
@@ -327,7 +352,7 @@ function bearer(accessToken: string): RequestInit {
       authorization: `Bearer ${accessToken}`,
     },
     cache: 'no-store',
-    redirect: 'error',
+    redirect: 'manual',
   };
 }
 
@@ -400,6 +425,9 @@ function parsePlayer(record: JsonObject, labels: Map<string, string>): Player | 
   const first = textField(record, 'name.first');
   const last = textField(record, 'name.last');
   const name = textField(record, 'name.full', 'name') ?? ([first, last].filter(Boolean).join(' ') || id);
+  const headshot = mediaField(record, 'image_url', 'headshot', 'player_image_url', 'image');
+  const nflTeam = textField(record, 'editorial_team_abbr', 'editorial_team_full_name', 'team_abbr', 'team_name');
+  const nflTeamLogo = mediaField(record, 'editorial_team_logo', 'team_logo', 'editorial_team_logos');
   const stats: Record<string, string | number> = {};
   for (const stat of findResources(record, 'stat')) {
     const statId = textField(stat, 'stat_id', 'id');
@@ -423,6 +451,9 @@ function parsePlayer(record: JsonObject, labels: Map<string, string>): Player | 
     slot: selected ?? '',
     points: numberField(record, 'player_points.total', 'points', 'total_points'),
     stats,
+    ...(headshot ? { headshot } : {}),
+    ...(nflTeam ? { nflTeam } : {}),
+    ...(nflTeamLogo ? { nflTeamLogo } : {}),
   };
 }
 
@@ -435,6 +466,8 @@ function parseTeam(record: JsonObject, labels: Map<string, string>): Team | null
   return {
     id,
     name: textField(record, 'name') ?? id,
+    logo: mediaField(record, 'logo', 'logo_url', 'team_logo', 'team_logos.0.team_logo.0.url', 'team_logos.0.team_logo.url', 'team_logos.team_logo.url'),
+    ...(findResources(record, 'manager').some((manager) => ['1', 'true'].includes(String(firstField(manager, 'is_current_login', 'is_current_user')).toLowerCase())) ? { isUserTeam: true } : {}),
     points: numberField(record, 'team_points.total', 'points', 'total_points', 'team_score'),
     players,
   };
@@ -453,6 +486,8 @@ function mergeTeams(records: JsonObject[], labels = new Map<string, string>()): 
     teams.set(team.id, {
       id: team.id,
       name: team.name || existing.name,
+      logo: team.logo ?? existing.logo,
+      isUserTeam: team.isUserTeam || existing.isUserTeam,
       points: team.points ?? existing.points,
       players: team.players.length ? team.players : existing.players,
     });
@@ -471,6 +506,8 @@ function mergeTeamValues(values: Team[]): Team[] {
     teams.set(team.id, {
       id: team.id,
       name: team.name || existing.name,
+      logo: team.logo ?? existing.logo,
+      isUserTeam: team.isUserTeam || existing.isUserTeam,
       points: team.points ?? existing.points,
       players: team.players.length ? team.players : existing.players,
     });

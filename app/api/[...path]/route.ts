@@ -4,8 +4,9 @@ import { requireUser } from '@/lib/auth';
 import { AppError, appUrl, body, checkOrigin, leagueInput, provider, verifyOAuthState, seal, unseal } from '@/lib/security';
 import { json, failure } from '@/lib/http';
 import { readState, withState } from '@/lib/store';
-import { dashboard, fetchLeague, yahooAccess } from '@/lib/dashboard';
+import { dashboard, espnAccess, fetchLeague, importEspnLeagues, yahooAccess } from '@/lib/dashboard';
 import { startEspnBrowser, finishEspnBrowser, stopEspnBrowser } from '@/lib/browserbase';
+import { discoverEspnLeagues } from '@/lib/espn';
 import { yahooAuthorizeUrl, exchangeYahooCode, discoverYahooLeagues } from '@/lib/yahoo';
 
 export const runtime='nodejs';
@@ -53,7 +54,10 @@ export async function GET(request:Request,context:Context) {
     }
     return json({error:'Not found.'},404);
   } catch(error) {
-    if(path==='yahoo/callback' || path==='yahoo/connect') return Response.redirect(`${appUrl()}/dashboard?error=yahoo_connection`);
+    if(path==='yahoo/callback' || path==='yahoo/connect') {
+      const yahooError = path==='yahoo/callback' ? new URL(request.url).searchParams.get('error') : null;
+      return Response.redirect(`${appUrl()}/dashboard?error=${yahooError === 'invalid_scope' ? 'yahoo_scope' : 'yahoo_connection'}`);
+    }
     return failure(error);
   }
 }
@@ -64,11 +68,9 @@ export async function POST(request:Request,context:Context) {
     if(path==='espn/start') {
       let createdSession:string | undefined;
       try { return json(await withState(user.id,async state=>{
-      if(state.nextBrowserAt && state.nextBrowserAt>Date.now()) throw new AppError('Wait before opening another login window.',429,Math.ceil((state.nextBrowserAt-Date.now())/1000));
       if(state.browser) { await stopEspnBrowser(unseal<{sessionId:string}>(state.browser.secret,`${user.id}:browser`).sessionId); delete state.browser; }
       // Validate encryption before starting a billable browser.
       seal({},`${user.id}:browser`);
-      state.nextBrowserAt=Date.now()+60000;
       const browser=await startEspnBrowser();
       createdSession=browser.sessionId;
       state.browser={secret:seal({sessionId:browser.sessionId},`${user.id}:browser`),expiresAt:browser.expiresAt};
@@ -88,10 +90,16 @@ export async function POST(request:Request,context:Context) {
         return {ok:true};
       }
       try {
-        const credentials=await finishEspnBrowser(sessionId);
+        const { leagues: pageLeagues, ...credentials }=await finishEspnBrowser(sessionId);
         state.connections={...state.connections,espn:{secret:seal(credentials,`${user.id}:espn`),status:'connected'}};
+        let leagues=pageLeagues;
+        try {
+          const found=await discoverEspnLeagues(credentials);
+          if(found.length) leagues=found;
+        } catch { /* Keep the connection if ESPN's account list is unavailable. */ }
+        state.espnDiscovery={leagues,expiresAt:new Date(Date.now()+600000).toISOString()};
+        return {ok:true,discovered:leagues.length,leagues};
       } finally { delete state.browser; }
-      return {ok:true};
     }));
     if(path==='leagues') {
       const input=leagueInput(await body(request));
@@ -115,6 +123,45 @@ export async function POST(request:Request,context:Context) {
       const failed=results.find(x=>x.status==='rejected');
       if(failed?.status==='rejected') throw failed.reason;
       return dashboard(user,state);
+    }));
+    if(path==='espn/import') {
+      const input=await body(request), raw=input.leagues;
+      if(!Array.isArray(raw) || raw.length>10) throw new AppError('Choose up to ten ESPN leagues.');
+      const selections=raw.map(value=>{
+        if(!value || typeof value!=='object' || Array.isArray(value)) throw new AppError('Choose leagues from the ESPN list.');
+        const item=value as Record<string,unknown>, id=String(item.id || ''), season=Number(item.season);
+        if(!/^\d{1,12}$/.test(id) || !Number.isInteger(season) || season<2018 || season>new Date().getFullYear()+1) throw new AppError('Choose leagues from the ESPN list.');
+        return {id,season};
+      });
+      if(new Set(selections.map(item=>`${item.id}:${item.season}`)).size!==selections.length) throw new AppError('Choose each ESPN league only once.');
+      return json(await withState(user.id,async state=>{
+        const pending=state.espnDiscovery;
+        if(!pending || Date.parse(pending.expiresAt)<Date.now()) { delete state.espnDiscovery; throw new AppError('The ESPN league list expired. Connect ESPN again.',409); }
+        const allowed=new Map(pending.leagues.map(league=>[`${league.id}:${league.season}`,league]));
+        const selected=selections.map(item=>allowed.get(`${item.id}:${item.season}`));
+        if(selected.some(item=>!item)) throw new AppError('Choose leagues from the ESPN list.');
+        const result=await importEspnLeagues(user.id,state,selected.filter((item): item is NonNullable<typeof item>=>Boolean(item)));
+        if(!result.failed.length) delete state.espnDiscovery;
+        return {...dashboard(user,state),...result};
+      }));
+    }
+    if(path==='espn/discover') return json(await withState(user.id,async state=>{
+      if(state.espnDiscovery?.leagues.length && Date.parse(state.espnDiscovery.expiresAt)>=Date.now()) return {...dashboard(user,state),availableLeagues:state.espnDiscovery.leagues};
+      delete state.espnDiscovery;
+      if(state.nextDiscoveryAt && state.nextDiscoveryAt>Date.now()) throw new AppError('Wait before discovering again.',429,Math.ceil((state.nextDiscoveryAt-Date.now())/1000));
+      state.nextDiscoveryAt=Date.now()+10000;
+      try {
+        const leagues=await discoverEspnLeagues(espnAccess(user.id,state));
+        state.espnDiscovery={leagues,expiresAt:new Date(Date.now()+600000).toISOString()};
+        return {...dashboard(user,state),availableLeagues:leagues};
+      } catch(error) {
+        if(error instanceof AppError && error.status===401 && state.connections?.espn) {
+          state.connections.espn.status='reconnect';
+          throw new AppError('ESPN authorization expired. Reconnect that account.',409);
+        }
+        if(error instanceof AppError && error.status===429) state.nextDiscoveryAt=Date.now()+Math.max(error.retryAfter || 60,10)*1000;
+        throw error;
+      }
     }));
     if(path==='yahoo/discover') return json(await withState(user.id,async state=>{
       if(state.nextDiscoveryAt && state.nextDiscoveryAt>Date.now()) throw new AppError('Wait before discovering again.',429,Math.ceil((state.nextDiscoveryAt-Date.now())/1000));
@@ -141,6 +188,7 @@ export async function DELETE(request:Request,context:Context) {
     return json(await withState(user.id,async state=>{
       if(selected==='espn' && state.browser) { await stopEspnBrowser(unseal<{sessionId:string}>(state.browser.secret,`${user.id}:browser`).sessionId); delete state.browser; }
       if(selected==='yahoo') delete state.yahooState;
+      if(selected==='espn') delete state.espnDiscovery;
       delete state.connections?.[selected];
       state.leagues=state.leagues?.filter(x=>x.provider!==selected);
       return dashboard(user,state);

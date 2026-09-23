@@ -3,7 +3,7 @@ import type { User } from '@supabase/supabase-js';
 import { AppError, seal, unseal } from './security';
 import type { State } from './store';
 import type { Provider } from './types';
-import { fetchEspnLeague } from './espn';
+import { fetchEspnLeague, type EspnLeagueOption } from './espn';
 import { fetchYahooLeague, refreshYahooTokens, type YahooTokens } from './yahoo';
 
 export function dashboard(user:User,state:State) {
@@ -26,12 +26,37 @@ export async function yahooAccess(owner:string,state:State) {
   }
   return tokens.accessToken;
 }
+export function espnAccess(owner:string,state:State) {
+  const connection = state.connections?.espn;
+  if(!connection) throw new AppError('Connect ESPN first.');
+  return unseal<{espn_s2:string;SWID:string}>(connection.secret,`${owner}:espn`);
+}
+export async function importEspnLeagues(owner:string,state:State,leagues:EspnLeagueOption[]) {
+  let imported=0;
+  const failed:{id:string;name:string;season:number;error:string}[]=[];
+  for(const league of leagues) {
+    const existing=state.leagues?.some(x=>x.provider==='espn' && x.id===league.id && x.season===league.season);
+    if(!existing && (state.leagues?.length || 0)>=10) {
+      failed.push({...league,error:'This account already has ten leagues.'});
+      continue;
+    }
+    try {
+      const snapshot=await fetchLeague(owner,state,'espn',league.id,league.season);
+      state.leagues=[...(state.leagues || []).filter(x=>!(x.provider==='espn' && x.id===snapshot.id && x.season===snapshot.season)),snapshot];
+      imported+=1;
+    } catch(error) {
+      if(error instanceof AppError && (error.status===409 || error.status===429)) throw error;
+      failed.push({...league,error:error instanceof AppError ? error.message : 'Could not load this ESPN league.'});
+    }
+  }
+  return {imported,failed};
+}
 export async function fetchLeague(owner:string,state:State,provider:Provider,id:string,season:number,yahooToken?:Promise<string>) {
   const connection = state.connections?.[provider];
   if(!connection) throw new AppError(`Connect ${provider === 'espn' ? 'ESPN' : 'Yahoo'} first.`);
   try {
     const snapshot = provider === 'espn'
-      ? await fetchEspnLeague(unseal(connection.secret,`${owner}:espn`),id,season)
+      ? await fetchEspnLeague(espnAccess(owner,state),id,season)
       : await fetchYahooLeague(await (yahooToken || yahooAccess(owner,state)),id,season);
     connection.status='connected';
     return snapshot;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '../lib/security';
-import { ESPN_API_BASE, fetchEspnLeague, parseEspnLeague } from '../lib/espn';
+import { ESPN_API_BASE, ESPN_FAN_API_BASE, discoverEspnLeagues, fetchEspnLeague, parseEspnLeague, parseEspnProfile } from '../lib/espn';
 
 const season = 2025;
 
@@ -15,10 +15,12 @@ function responseFixture(): any {
         id: 1,
         location: 'The',
         nickname: 'Stat Crew',
+        logo: 'https://cdn.example/team.png',
+        owners: ['owner-id'],
         roster: { entries: [{
           playerId: 101,
           lineupSlotId: 0,
-          playerPoolEntry: { player: { id: 101, fullName: 'Quarterback One', defaultPositionId: 1 } },
+          playerPoolEntry: { player: { id: 101, fullName: 'Quarterback One', defaultPositionId: 1, imageUrl: 'https://cdn.example/qb.png', proTeamId: 12 } },
         }] },
       },
       {
@@ -64,11 +66,41 @@ test('parser maps current matchup, league points, roster points, and weekly stat
   assert.equal(snapshot.week, 3);
   assert.deepEqual(snapshot.matchups, [{ home: '1', away: '2' }]);
   assert.equal(snapshot.teams[0].points, 118.4);
+  assert.equal(snapshot.teams[0].logo, 'https://cdn.example/team.png');
+  assert.equal(snapshot.teams[0].players[0].headshot, 'https://cdn.example/qb.png');
+  assert.equal(snapshot.teams[0].players[0].nflTeam, 'KC');
+  assert.equal(snapshot.teams[0].players[0].nflTeamLogo, 'https://a.espncdn.com/i/teamlogos/nfl/500/12.png');
   assert.equal(snapshot.teams[0].players[0].points, 25.5);
   assert.equal(snapshot.teams[0].players[0].position, 'QB');
   assert.equal(snapshot.teams[0].players[0].slot, 'QB');
   assert.deepEqual(snapshot.teams[0].players[0].stats, { 'Passing yards': 300, 'Passing touchdowns': 2 });
   assert.equal(snapshot.teams[1].points, null);
+});
+
+test('parser prefers ESPN live matchup points when totalPoints is still zero', () => {
+  const value = responseFixture();
+  value.schedule[1].home.totalPoints = 0;
+  value.schedule[1].home.totalPointsLive = 86.8;
+  const snapshot = parseEspnLeague(value, '123', season);
+  assert.equal(snapshot.teams[0].points, 86.8);
+});
+
+test('parser marks the ESPN team owned by the authenticated account', () => {
+  const snapshot = parseEspnLeague(responseFixture(), '123', season, '{OWNER-ID}');
+  assert.equal(snapshot.teams[0].isUserTeam, true);
+  assert.equal(snapshot.teams[1].isUserTeam, undefined);
+});
+
+test('parser derives a D/ST logo from the team name when ESPN omits proTeamId', () => {
+  const value = responseFixture();
+  value.teams[0].roster.entries.push({
+    playerId: 202,
+    lineupSlotId: 16,
+    playerPoolEntry: { player: { id: 202, fullName: 'Texans D/ST', defaultPositionId: 16 } },
+  });
+  const defense = parseEspnLeague(value, '123', season).teams[0].players[1];
+  assert.equal(defense.nflTeam, 'HOU');
+  assert.equal(defense.nflTeamLogo, 'https://a.espncdn.com/i/teamlogos/nfl/500/34.png');
 });
 
 test('parser does not inherit a base roster total over a scoped weekly total', () => {
@@ -133,7 +165,7 @@ test('fetch uses only the fixed ESPN read API, scoped scoreboard views, and safe
     assert.deepEqual(second.searchParams.getAll('view'), ['mMatchupScore', 'mScoreboard']);
     assert.equal(second.searchParams.get('scoringPeriodId'), '5');
     assert.equal(calls[0].init?.cache, 'no-store');
-    assert.equal(calls[0].init?.redirect, 'error');
+    assert.equal(calls[0].init?.redirect, 'manual');
     assert.equal((calls[0].init?.headers as Record<string, string>).Cookie, 'espn_s2=s2-token; SWID={user-id}');
     assert.deepEqual(JSON.parse((calls[1].init?.headers as Record<string, string>)['X-Fantasy-Filter']), {
       schedule: { filterMatchupPeriodIds: { value: [3] } },
@@ -153,6 +185,58 @@ test('fetch rejects cookie header injection before making a request', async () =
       (error: unknown) => error instanceof AppError && error.status === 400,
     );
     assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('profile parser finds football leagues in nested account data and ignores other sports', () => {
+  assert.deepEqual(parseEspnProfile({
+    sports: [
+      { sport: 'football', leagues: [
+        { leagueId: '123', leagueName: 'Sunday League', seasonId: 2025 },
+        { id: '456', name: 'Keeper League', season: 2026 },
+      ] },
+      { sport: 'basketball', leagues: [{ leagueId: '999', leagueName: 'Hoops' }] },
+    ],
+  }, 2026), [
+    { id: '123', name: 'Sunday League', season: 2025 },
+    { id: '456', name: 'Keeper League', season: 2026 },
+  ]);
+});
+
+test('profile parser reads ESPN account group listings', () => {
+  assert.deepEqual(parseEspnProfile({
+    preferences: [
+      { metaData: { entry: {
+        name: 'Fantasy Football 2026', seasonId: 2026,
+        groups: [{ groupId: 1179837, groupName: 'Amtrak' }],
+      } } },
+      { metaData: { entry: {
+        name: 'Fantasy Basketball 2026', seasonId: 2026,
+        groups: [{ groupId: 7654321, groupName: 'Hoops' }],
+      } } },
+    ],
+  }, 2026), [{ id: '1179837', name: 'Amtrak', season: 2026 }]);
+});
+
+test('profile discovery uses the SWID path and authenticated ESPN cookies', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({ leagues: [{ leagueId: '123', leagueName: 'Sunday League', seasonId: 2026 }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    assert.deepEqual(await discoverEspnLeagues({ espn_s2: 's2-token', SWID: '{user-id}' }, 2026), [
+      { id: '123', name: 'Sunday League', season: 2026 },
+    ]);
+    const request = new URL(calls[0].url);
+    assert.equal(request.origin, ESPN_FAN_API_BASE);
+    assert.equal(request.pathname, '/apis/v2/fans/%7Buser-id%7D');
+    assert.equal((calls[0].init?.headers as Record<string, string>).Cookie, 'SWID={user-id}; espn_s2=s2-token');
+    assert.equal(calls[0].init?.redirect, 'manual');
+    assert.equal(calls[0].init?.cache, 'no-store');
   } finally {
     globalThis.fetch = originalFetch;
   }

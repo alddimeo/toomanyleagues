@@ -43,6 +43,7 @@ test('exchanges a code and keeps or rotates refresh tokens', async () => {
   globalThis.fetch = (async (input, init) => {
     assert.equal(String(input), 'https://api.login.yahoo.com/oauth2/get_token');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Basic Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ=');
+    assert.equal(init?.redirect, 'manual');
     call += 1;
     return new Response(
       JSON.stringify(
@@ -138,6 +139,8 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
                   { team_key: '449.l.123.t.1' },
                   { team_id: '1' },
                   { name: 'Team One' },
+                  { team_logos: { '0': { team_logo: { '0': { url: 'https://cdn.example/fantasy-team.png' } } } } },
+                  { managers: { manager: [{ is_current_login: '1' }] } },
                   {
                     roster: {
                       '0': {
@@ -152,6 +155,9 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
                                     { player_key: '449.p.10' },
                                     { player_id: '10' },
                                     { name: { full: 'Quarterback One' } },
+                                    { image_url: 'https://cdn.example/qb.png' },
+                                    { editorial_team_abbr: 'KC' },
+                                    { editorial_team_logo: 'https://cdn.example/kc.png' },
                                     { display_position: 'QB' },
                                     { selected_position: { position: 'BN' } },
                                     {
@@ -236,7 +242,9 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
   assert.equal(snapshot.week, 4);
   assert.deepEqual(snapshot.matchups, [{ home: '449.l.123.t.1', away: '449.l.123.t.2' }]);
   assert.equal(snapshot.teams.length, 2);
+  assert.equal(snapshot.teams[0].isUserTeam, true);
   assert.equal(snapshot.teams[0].points, 88.5);
+  assert.equal(snapshot.teams[0].logo, 'https://cdn.example/fantasy-team.png');
   assert.deepEqual(snapshot.teams[0].players[0], {
     id: '449.p.10',
     name: 'Quarterback One',
@@ -244,15 +252,18 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
     slot: 'BN',
     points: 18.5,
     stats: { 'Passing yards': 250, 'Pass TD': 2 },
+    headshot: 'https://cdn.example/qb.png',
+    nflTeam: 'KC',
+    nflTeamLogo: 'https://cdn.example/kc.png',
   });
 });
 
 test('fetches metadata first, then requests the current roster period and scoreboard', async () => {
   process.env.APP_URL = 'https://league.example';
-  const urls: string[] = [];
-  globalThis.fetch = (async (input) => {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
-    urls.push(url);
+    requests.push({ url, init });
     if (url.includes('/league/449.l.123/settings?')) {
       return new Response(
         JSON.stringify({
@@ -287,11 +298,12 @@ test('fetches metadata first, then requests the current roster period and scoreb
   }) as typeof fetch;
 
   const snapshot = await fetchYahooLeague('access-token', '449.l.123', 2024);
-  assert.deepEqual(urls, [
+  assert.deepEqual(requests.map((request) => request.url), [
     'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/settings?format=json',
     'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/teams/roster;week=4/players/stats;type=week;week=4?format=json',
     'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/scoreboard;week=4?format=json',
   ]);
+  assert.ok(requests.every((request) => request.init?.redirect === 'manual'));
   assert.equal(snapshot.week, 4);
   assert.equal(snapshot.teams[0].id, '449.l.123.t.1');
 });

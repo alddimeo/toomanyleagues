@@ -1,8 +1,15 @@
 import Browserbase from '@browserbasehq/sdk';
 import { AppError } from './security';
+import type { EspnLeagueOption } from './espn';
 
 const SESSION_TIMEOUT_SECONDS = 600;
 const ESPN_LOGIN_URL = 'https://fantasy.espn.com/';
+const ESPN_LEAGUE_PAGES = [
+  ESPN_LOGIN_URL,
+  'https://fantasy.espn.com/football/',
+  'https://fantasy.espn.com/football/my-teams',
+  'https://fantasy.espn.com/football/leagues',
+];
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const CDP_TIMEOUT_MS = 15_000;
 
@@ -35,7 +42,7 @@ function safeBrowserError(error: unknown, fallback: string): AppError {
 function liveUrl(value: { debuggerFullscreenUrl?: string; debuggerUrl?: string; pages?: { debuggerFullscreenUrl?: string; debuggerUrl?: string }[] }): string {
   const url = value.debuggerFullscreenUrl || value.debuggerUrl || value.pages?.[0]?.debuggerFullscreenUrl || value.pages?.[0]?.debuggerUrl;
   if (!url) throw new AppError('Browser sign-in is unavailable.', 502);
-  return url;
+  return `${url}${url.includes('?') ? '&' : '?'}navbar=false`;
 }
 
 function errorStatus(error: unknown): number | undefined {
@@ -211,7 +218,7 @@ export async function startEspnBrowser(): Promise<{ sessionId: string; liveUrl: 
       projectId,
       keepAlive: true,
       api_timeout: SESSION_TIMEOUT_SECONDS,
-      browserSettings: { logSession: false, recordSession: false, solveCaptchas: false },
+      browserSettings: { logSession: false, recordSession: false, solveCaptchas: false, viewport: { width: 1024, height: 576 } },
     });
     const id = sessionId(created.id);
     if (!created.connectUrl) throw new AppError('Browser sign-in is unavailable.', 502);
@@ -248,11 +255,84 @@ function cookieValue(cookies: CdpCookie[], name: string): string | null {
   return typeof cookie?.value === 'string' ? cookie.value : null;
 }
 
-export async function finishEspnBrowser(session: string): Promise<{ espn_s2: string; SWID: string }> {
+function cleanLeagueName(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+}
+
+export function parseEspnLeagueLinks(value: unknown, fallbackSeason: number): EspnLeagueOption[] {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { return []; }
+  }
+  const page = cdpObject(parsed);
+  const options = new Map<string, EspnLeagueOption>();
+  const add = (hrefValue: unknown, nameValue: unknown) => {
+    const href = typeof hrefValue === 'string' ? hrefValue : '';
+    const match = href.match(/(?:[?&#]|^)(?:leagueId|leagueID)=(\d{1,12})/i)
+      || href.match(/(?:leagueId|leagueID)\s*["']?\s*[:=]\s*["']?(\d{1,12})/i);
+    if (!match) return;
+    const seasonMatch = href.match(/(?:[?&#]|^)(?:seasonId|season)=(\d{4})/i);
+    const season = seasonMatch ? Number(seasonMatch[1]) : fallbackSeason;
+    if (!Number.isInteger(season) || season < 2018 || season > new Date().getFullYear() + 1) return;
+    const id = match[1];
+    const name = cleanLeagueName(nameValue);
+    const existing = options.get(`${id}:${season}`);
+    if (!existing || (existing.name.startsWith('ESPN League ') && name)) {
+      options.set(`${id}:${season}`, { id, name: name || existing?.name || `ESPN League ${id}`, season });
+    }
+  };
+  const links = Array.isArray(page?.links) ? page.links : [];
+  for (const link of links) {
+    const item = cdpObject(link);
+    if (item) add(item.href, item.name);
+  }
+  if (!options.size) {
+    const raw = typeof page?.raw === 'string' ? page.raw : '';
+    for (const match of raw.matchAll(/(?:leagueId|leagueID)\s*["']?\s*[:=]\s*["']?(\d{1,12})/gi)) add(`?leagueId=${match[1]}`, '');
+  }
+  add(page?.href, page?.title);
+  return [...options.values()].slice(0, 10);
+}
+
+const LEAGUE_PAGE_SCRIPT = `JSON.stringify((() => {
+  const links = [...document.querySelectorAll('a[href], [data-league-id]')].map((element) => ({
+    href: element.getAttribute('href') || (element.getAttribute('data-league-id') ? '?leagueId=' + element.getAttribute('data-league-id') : ''),
+    name: (element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+  }));
+  const raw = (document.documentElement && document.documentElement.outerHTML || '').slice(0, 250000);
+  return { href: location.href, title: document.title, links, raw };
+})())`;
+
+function evaluatedText(value: JsonObject): string | null {
+  return cdpText(cdpObject(value.result)?.value);
+}
+
+async function discoverEspnLeagues(connection: CdpConnection, pageSessionId: string, season: number): Promise<EspnLeagueOption[]> {
+  for (const url of ESPN_LEAGUE_PAGES) {
+    try {
+      if (url !== ESPN_LOGIN_URL) {
+        const navigation = await connection.send('Page.navigate', { url }, pageSessionId);
+        if (typeof navigation.errorText === 'string' && navigation.errorText) continue;
+      }
+      const evaluated = await connection.send('Runtime.evaluate', {
+        expression: `new Promise((resolve) => setTimeout(() => resolve(${LEAGUE_PAGE_SCRIPT}), 1200))`,
+        awaitPromise: true,
+        returnByValue: true,
+      }, pageSessionId);
+      const found = parseEspnLeagueLinks(evaluatedText(evaluated), season);
+      if (found.length) return found;
+    } catch {
+      // Discovery is best effort; the authenticated cookies remain useful for manual fallback.
+    }
+  }
+  return [];
+}
+
+export async function finishEspnBrowser(session: string): Promise<{ espn_s2: string; SWID: string; leagues: EspnLeagueOption[] }> {
   const id = sessionId(session);
   const { client, projectId } = config();
   let connection: CdpConnection | undefined;
-  let result: { espn_s2: string; SWID: string } | undefined;
+  let result: { espn_s2: string; SWID: string; leagues: EspnLeagueOption[] } | undefined;
   let failure: unknown;
   try {
     const saved = await client.sessions.retrieve(id);
@@ -265,14 +345,14 @@ export async function finishEspnBrowser(session: string): Promise<{ espn_s2: str
     const espnS2 = cookieValue(cookies, 'espn_s2');
     const swid = cookieValue(cookies, 'SWID');
     if (!espnS2 || !swid) throw new AppError('ESPN sign-in is incomplete. Sign in and try again.', 400);
-    result = { espn_s2: espnS2, SWID: swid };
+    result = { espn_s2: espnS2, SWID: swid, leagues: await discoverEspnLeagues(connection, pageSessionId, new Date().getFullYear()) };
   } catch (error) {
     failure = safeBrowserError(error, 'Could not read ESPN sign-in.');
   }
   try { await connection?.close(); } catch (error) { if (!failure) failure = safeBrowserError(error, 'Could not close ESPN sign-in.'); }
   try { await release(client, id, projectId); } catch (error) { if (!failure) failure = safeBrowserError(error, 'Could not stop ESPN sign-in.'); }
   if (failure) throw failure;
-  return result as { espn_s2: string; SWID: string };
+  return result as { espn_s2: string; SWID: string; leagues: EspnLeagueOption[] };
 }
 
 export async function stopEspnBrowser(session: string): Promise<void> {

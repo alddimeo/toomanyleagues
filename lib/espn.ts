@@ -2,11 +2,14 @@ import { AppError } from './security';
 import type { LeagueSnapshot, Player, Team } from './types';
 
 const ESPN_API = 'https://lm-api-reads.fantasy.espn.com';
+const ESPN_FAN_API = 'https://fan.api.espn.com';
 const ESPN_METADATA_VIEWS = ['mSettings', 'mTeam', 'mRoster', 'mStatus'];
 const ESPN_SCOREBOARD_VIEWS = ['mMatchupScore', 'mScoreboard'];
 const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_DISCOVERY_NODES = 10_000;
 
 type JsonObject = Record<string, unknown>;
+export type EspnLeagueOption = { id: string; name: string; season: number };
 
 const POSITION_NAMES: Record<number, string> = {
   1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST',
@@ -27,6 +30,26 @@ const STAT_NAMES: Record<number, string> = {
   83: 'Made field goals', 86: 'Made extra points', 94: 'Defensive touchdowns', 95: 'Defensive interceptions',
   96: 'Defensive fumbles', 97: 'Defensive blocked kicks', 98: 'Defensive safeties', 99: 'Defensive sacks',
 };
+
+const NFL_TEAM_NAMES: Record<number, string> = {
+  1: 'ATL', 2: 'BUF', 3: 'CHI', 4: 'CIN', 5: 'CLE', 6: 'DAL', 7: 'DEN', 8: 'DET', 9: 'GB',
+  10: 'TEN', 11: 'IND', 12: 'KC', 13: 'LV', 14: 'LAR', 15: 'MIA', 16: 'MIN', 17: 'NE',
+  18: 'NO', 19: 'NYG', 20: 'NYJ', 21: 'PHI', 22: 'ARI', 23: 'PIT', 24: 'LAC', 25: 'SF',
+  26: 'SEA', 27: 'TB', 28: 'WAS', 29: 'CAR', 30: 'JAX', 33: 'BAL', 34: 'HOU',
+};
+
+const NFL_TEAM_IDS_BY_NAME: Record<string, number> = {
+  falcons: 1, bills: 2, bears: 3, bengals: 4, browns: 5, cowboys: 6, broncos: 7, lions: 8,
+  packers: 9, titans: 10, colts: 11, chiefs: 12, raiders: 13, rams: 14, dolphins: 15,
+  vikings: 16, patriots: 17, saints: 18, giants: 19, jets: 20, eagles: 21, cardinals: 22,
+  steelers: 23, chargers: 24, '49ers': 25, seahawks: 26, buccaneers: 27, commanders: 28,
+  panthers: 29, jaguars: 30, ravens: 33, texans: 34,
+};
+
+function nflTeamIdFromName(value: string): number | null {
+  const normalized = value.toLowerCase();
+  return Object.entries(NFL_TEAM_IDS_BY_NAME).find(([name]) => normalized.includes(name))?.[1] ?? null;
+}
 
 function object(value: unknown): JsonObject | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
@@ -51,6 +74,32 @@ function text(value: unknown): string | null {
   if (typeof value === 'string' && value.trim() !== '') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return null;
+}
+
+function mediaUrl(value: unknown): string | undefined {
+  if (typeof value === 'string' && /^https?:\/\//i.test(value.trim()) && value.length <= 2048) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const result = mediaUrl(item);
+      if (result) return result;
+    }
+    return undefined;
+  }
+  const record = object(value);
+  if (!record) return undefined;
+  for (const key of ['href', 'url', 'imageUrl', 'image_url']) {
+    const result = mediaUrl(record[key]);
+    if (result) return result;
+  }
+  return undefined;
+}
+
+function firstMediaUrl(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const result = mediaUrl(value);
+    if (result) return result;
+  }
+  return undefined;
 }
 
 function id(value: unknown): string | null {
@@ -108,6 +157,18 @@ function teamName(team: JsonObject): string {
   if (direct) return direct;
   const composed = [text(team.location), text(team.nickname)].filter((value): value is string => !!value).join(' ');
   return composed || text(team.abbrev) || '';
+}
+
+function ownerMatches(value: unknown, ownerId: string): boolean {
+  const left = text(value)?.replace(/[{}]/g, '').toLowerCase();
+  const right = ownerId.replace(/[{}]/g, '').toLowerCase();
+  return Boolean(left && right && left === right);
+}
+
+function ownedBy(team: JsonObject, ownerId: string | undefined): boolean {
+  if (!ownerId) return false;
+  const owners = Array.isArray(team.owners) ? team.owners : [];
+  return [team.owner, team.primaryOwner, ...owners].some((value) => ownerMatches(value, ownerId));
 }
 
 function playerObject(entry: JsonObject): JsonObject {
@@ -186,6 +247,24 @@ function player(entry: JsonObject, season: number, scoring: number, scoped: bool
   const slotId = integer(entry.lineupSlotId);
   const fullName = text(playerData.fullName) || [text(playerData.firstName), text(playerData.lastName)]
     .filter((value): value is string => !!value).join(' ');
+  const headshot = firstMediaUrl(
+    playerData.headshot,
+    playerData.headshotURL,
+    playerData.imageUrl,
+    playerData.image,
+  ) || (/^\d+$/.test(playerId) ? `https://a.espncdn.com/i/headshots/nfl/players/full/${playerId}.png` : undefined);
+  const proTeamId = integer(playerData.proTeamId);
+  const inferredProTeamId = proTeamId !== null && NFL_TEAM_NAMES[proTeamId]
+    ? proTeamId
+    : (positionId === 16 || slotId === 16 ? nflTeamIdFromName(fullName) : null);
+  const nflTeam = text(playerData.proTeamAbbreviation) || text(playerData.editorialTeamAbbr) ||
+    text(playerData.proTeamName) || (inferredProTeamId === null ? null : NFL_TEAM_NAMES[inferredProTeamId] || null);
+  const nflTeamLogo = firstMediaUrl(
+    playerData.proTeamLogo,
+    playerData.editorialTeamLogo,
+    object(playerData.proTeam)?.logo,
+    inferredProTeamId && NFL_TEAM_NAMES[inferredProTeamId] ? `https://a.espncdn.com/i/teamlogos/nfl/500/${inferredProTeamId}.png` : undefined,
+  );
   return {
     id: playerId,
     name: fullName,
@@ -193,6 +272,9 @@ function player(entry: JsonObject, season: number, scoring: number, scoped: bool
     slot: slotId === null ? '' : SLOT_NAMES[slotId] || String(slotId),
     points: playerPoints(entry, season, scoring, scoped),
     stats: playerStats(entry, season, scoring, scoped),
+    ...(headshot ? { headshot } : {}),
+    ...(nflTeam ? { nflTeam } : {}),
+    ...(nflTeamLogo ? { nflTeamLogo } : {}),
   };
 }
 
@@ -244,14 +326,14 @@ function currentSides(data: JsonObject, week: number): Map<string, JsonObject> {
 
 function teamPoints(side: JsonObject | undefined): number | null {
   const sideRosterData = firstObject(side?.rosterForMatchupPeriod, side?.rosterForCurrentScoringPeriod);
-  return firstNumber(
-    side?.totalPoints,
-    sideRosterData?.appliedStatTotal,
-    side?.appliedStatTotal,
-  );
+  const live = firstNumber(side?.totalPointsLive);
+  const total = firstNumber(side?.totalPoints);
+  if (live !== null && live > 0) return live;
+  if (total !== null && total > 0) return total;
+  return firstNumber(sideRosterData?.appliedStatTotal, side?.appliedStatTotal, live, total);
 }
 
-function teamSnapshot(team: JsonObject, side: JsonObject | undefined, season: number, scoring: number): Team | null {
+function teamSnapshot(team: JsonObject, side: JsonObject | undefined, season: number, scoring: number, ownerId?: string): Team | null {
   const teamId = id(team.id) || id(side?.teamId);
   if (!teamId) return null;
   const baseEntries = rosterEntries(team);
@@ -273,6 +355,8 @@ function teamSnapshot(team: JsonObject, side: JsonObject | undefined, season: nu
   return {
     id: teamId,
     name: teamName(team),
+    logo: firstMediaUrl(team.logo, team.logoUrl, team.teamLogo, team.logos),
+    ...(ownedBy(team, ownerId) ? { isUserTeam: true } : {}),
     points: teamPoints(side),
     players: entries.map((entry) => player(entry, season, scoring, liveById.has(entryPlayerId(entry) || '')))
       .filter((value): value is Player => !!value),
@@ -291,7 +375,7 @@ function matchupSnapshot(data: JsonObject, week: number): { home: string; away: 
   return result;
 }
 
-export function parseEspnLeague(value: unknown, leagueId: string, season: number): LeagueSnapshot {
+export function parseEspnLeague(value: unknown, leagueId: string, season: number, ownerId?: string): LeagueSnapshot {
   const data = object(value);
   if (!data || !Array.isArray(data.teams) || !Array.isArray(data.schedule)) {
     throw new AppError('ESPN returned an invalid league response.', 502);
@@ -301,7 +385,7 @@ export function parseEspnLeague(value: unknown, leagueId: string, season: number
   const sides = currentSides(data, week);
   const teams = array(data.teams).map((team) => {
     const teamId = id(team.id);
-    return teamSnapshot(team, teamId ? sides.get(teamId) : undefined, season, scoring);
+    return teamSnapshot(team, teamId ? sides.get(teamId) : undefined, season, scoring, ownerId);
   }).filter((team): team is Team => !!team);
   const settings = object(data.settings);
   return {
@@ -354,6 +438,107 @@ function isTimeout(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'name' in error && ['AbortError', 'TimeoutError'].includes(String((error as { name?: unknown }).name));
 }
 
+function discoveryId(value: unknown): string | null {
+  const result = text(value)?.trim() || '';
+  return /^\d{1,12}$/.test(result) ? result : null;
+}
+
+function discoveryName(value: JsonObject): string {
+  for (const key of ['leagueName', 'groupName', 'displayName', 'name', 'title']) {
+    const result = text(value[key])?.replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (result) return result;
+  }
+  return '';
+}
+
+function discoverySeason(value: JsonObject, fallback: number): number {
+  for (const key of ['seasonId', 'season', 'seasonYear', 'year']) {
+    const candidate = integer(value[key]) ?? integer(object(value[key])?.id) ?? integer(object(value[key])?.year);
+    if (candidate !== null && candidate >= 2018 && candidate <= new Date().getFullYear() + 1) return candidate;
+  }
+  return fallback;
+}
+
+function discoverySport(value: unknown): string {
+  const direct = text(value);
+  if (direct) return direct;
+  const nested = object(value);
+  return text(nested?.name) || text(nested?.abbreviation) || text(nested?.code) || '';
+}
+
+function nonFootballSport(value: string): boolean {
+  return /basket|baseball|hockey|soccer|basketball|fba|flb|fhl|futbol/i.test(value) && !/football|ffl/i.test(value);
+}
+
+export function parseEspnProfile(value: unknown, fallbackSeason: number): EspnLeagueOption[] {
+  const options = new Map<string, EspnLeagueOption>();
+  let nodes = 0;
+  const add = (record: JsonObject, parentKey: string, sport: string, inheritedName: string, season: number) => {
+    const leagueIdField = Object.entries(record).find(([key]) => /^(?:league|group)[_-]?id$/i.test(key))?.[1];
+    const id = discoveryId(leagueIdField ?? (/league/i.test(parentKey) ? record.id : undefined));
+    if (!id || nonFootballSport(sport)) return;
+    const recordName = discoveryName(record);
+    const name = recordName || inheritedName || `ESPN League ${id}`;
+    const recordSeason = discoverySeason(record, season);
+    const key = `${id}:${recordSeason}`;
+    const existing = options.get(key);
+    if (!existing || (existing.name.startsWith('ESPN League ') && recordName)) options.set(key, { id, name, season: recordSeason });
+  };
+  const walk = (current: unknown, parentKey: string, sport: string, inheritedName: string, season: number, depth: number): void => {
+    if (nodes++ >= MAX_DISCOVERY_NODES || depth > 8) return;
+    if (Array.isArray(current)) {
+      for (const item of current) walk(item, parentKey, sport, inheritedName, season, depth + 1);
+      return;
+    }
+    const record = object(current);
+    if (!record) return;
+    const localSport = discoverySport(record.sport || record.sportName || record.gameCode || record.gameAbbrev || record.gameName || (Array.isArray(record.groups) ? record.name : undefined)) || sport;
+    const localSeason = discoverySeason(record, season);
+    const recordName = discoveryName(record);
+    const hasLeagueName = Object.keys(record).some((key) => /^league[_-]?name$/i.test(key));
+    add(record, parentKey, localSport, inheritedName, localSeason);
+    for (const [key, child] of Object.entries(record)) {
+      if (!Array.isArray(child) && !object(child)) continue;
+      walk(child, key, localSport, hasLeagueName ? recordName : '', localSeason, depth + 1);
+    }
+  };
+  walk(value, '', '', '', fallbackSeason, 0);
+  return [...options.values()].slice(0, 10);
+}
+
+export async function discoverEspnLeagues(
+  credentials: { espn_s2: string; SWID: string },
+  fallbackSeason = new Date().getFullYear(),
+): Promise<EspnLeagueOption[]> {
+  const espnS2 = cookieValue('espn_s2', credentials?.espn_s2);
+  const swid = cookieValue('SWID', credentials?.SWID);
+  const url = new URL(`/apis/v2/fans/${encodeURIComponent(swid)}`, ESPN_FAN_API);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Accept: 'application/json', Cookie: `SWID=${swid}; espn_s2=${espnS2}` },
+      cache: 'no-store',
+      redirect: 'manual',
+      signal: timeoutSignal(),
+    });
+  } catch (error) {
+    if (isTimeout(error)) throw new AppError('ESPN league discovery timed out.', 502);
+    throw new AppError('ESPN league discovery is unavailable right now.', 502);
+  }
+  if (response.status === 401) throw new AppError('ESPN authentication expired. Reconnect your ESPN account.', 401);
+  if (response.status === 403) throw new AppError('ESPN denied access to your leagues.', 403);
+  if (response.status === 429) throw new AppError('ESPN is rate-limiting requests. Try again later.', 429, retryAfter(response.headers.get('Retry-After')));
+  if (!response.ok) throw new AppError('ESPN league discovery is unavailable right now.', 502);
+  const length = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(length) && length > 1_000_000) throw new AppError('ESPN returned an invalid league list.', 502);
+  try {
+    return parseEspnProfile(await response.json(), fallbackSeason);
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('ESPN returned an invalid league list.', 502);
+  }
+}
+
 export async function fetchEspnLeague(
   credentials: { espn_s2: string; SWID: string },
   leagueId: string,
@@ -373,7 +558,7 @@ export async function fetchEspnLeague(
           ...(filter ? { 'X-Fantasy-Filter': JSON.stringify(filter) } : {}),
         },
         cache: 'no-store',
-        redirect: 'error',
+        redirect: 'manual',
         signal: timeoutSignal(),
       });
     } catch (error) {
@@ -406,7 +591,8 @@ export async function fetchEspnLeague(
     settings: { ...object(metadata.settings), ...object(scoreboard.settings) },
     teams: metadata.teams,
   };
-  return parseEspnLeague(combined, leagueId, season);
+  return parseEspnLeague(combined, leagueId, season, swid);
 }
 
 export const ESPN_API_BASE = ESPN_API;
+export const ESPN_FAN_API_BASE = ESPN_FAN_API;

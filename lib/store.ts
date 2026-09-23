@@ -10,8 +10,8 @@ export type State = {
   browser?: {secret:string;expiresAt:string};
   yahooState?: {nonce:string;expiresAt:string};
   nextRefreshAt?: number;
-  nextBrowserAt?: number;
   nextDiscoveryAt?: number;
+  espnDiscovery?: {leagues:{id:string;name:string;season:number}[];expiresAt:string};
 };
 function db() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) throw new AppError('Database is not configured yet.',503);
