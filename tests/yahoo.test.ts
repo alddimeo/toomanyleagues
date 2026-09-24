@@ -1,73 +1,18 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
-  exchangeYahooCode,
+  discoverYahooLeagues,
   fetchYahooLeague,
   parseYahooLeagueSnapshot,
   parseYahooLeagues,
-  refreshYahooTokens,
-  yahooAuthorizeUrl,
+  parseYahooRosterProjections,
 } from '../lib/yahoo';
+import { playerStatsWithDefaults } from '../lib/player-stats';
 
 const originalFetch = globalThis.fetch;
-const originalEnv = { ...process.env };
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  for (const key of Object.keys(process.env)) {
-    if (!(key in originalEnv)) delete process.env[key];
-  }
-  Object.assign(process.env, originalEnv);
-});
-
-test('builds a read-only Yahoo consent URL with the callback and state', () => {
-  process.env.YAHOO_CLIENT_ID = 'client-id';
-  process.env.APP_URL = 'https://league.example/';
-
-  const url = new URL(yahooAuthorizeUrl('csrf value'));
-
-  assert.equal(url.origin, 'https://api.login.yahoo.com');
-  assert.equal(url.pathname, '/oauth2/request_auth');
-  assert.equal(url.searchParams.get('client_id'), 'client-id');
-  assert.equal(url.searchParams.get('redirect_uri'), 'https://league.example/api/yahoo/callback');
-  assert.equal(url.searchParams.get('response_type'), 'code');
-  assert.equal(url.searchParams.get('scope'), 'fspt-r');
-  assert.equal(url.searchParams.get('state'), 'csrf value');
-});
-
-test('exchanges a code and keeps or rotates refresh tokens', async () => {
-  process.env.YAHOO_CLIENT_ID = 'client-id';
-  process.env.YAHOO_CLIENT_SECRET = 'client-secret';
-  process.env.APP_URL = 'https://league.example';
-  let call = 0;
-  globalThis.fetch = (async (input, init) => {
-    assert.equal(String(input), 'https://api.login.yahoo.com/oauth2/get_token');
-    assert.equal(new Headers(init?.headers).get('authorization'), 'Basic Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ=');
-    assert.equal(init?.redirect, 'manual');
-    call += 1;
-    return new Response(
-      JSON.stringify(
-        call === 1
-          ? { access_token: 'access-1', refresh_token: 'refresh-1', expires_in: '3600' }
-          : call === 2
-            ? { access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 1800 }
-            : { access_token: 'access-3', expires_in: 900 },
-      ),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    );
-  }) as typeof fetch;
-
-  const first = await exchangeYahooCode('authorization-code');
-  const second = await refreshYahooTokens(first.refreshToken);
-  const third = await refreshYahooTokens(second.refreshToken);
-  assert.equal(first.accessToken, 'access-1');
-  assert.equal(first.refreshToken, 'refresh-1');
-  assert.equal(second.accessToken, 'access-2');
-  assert.equal(second.refreshToken, 'refresh-2');
-  assert.equal(third.accessToken, 'access-3');
-  assert.equal(third.refreshToken, 'refresh-2');
-  assert.ok(Date.parse(first.expiresAt) > Date.now());
-  assert.ok(Date.parse(second.expiresAt) > Date.now());
 });
 
 test('parses leagues from Yahoo resource arrays and selects the current game season', () => {
@@ -116,7 +61,7 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
       league: [
         { league_key: '449.l.123' },
         { league_id: '123' },
-        { name: 'Current League' },
+        { name: 'Current League', logo_url: 'https://cdn.example/yahoo-league.png' },
         { season: '2024' },
         { current_week: '4' },
         {
@@ -140,6 +85,7 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
                   { team_id: '1' },
                   { name: 'Team One' },
                   { team_logos: { '0': { team_logo: { '0': { url: 'https://cdn.example/fantasy-team.png' } } } } },
+                  { team_points: { total: '1000' } },
                   { managers: { manager: [{ is_current_login: '1' }] } },
                   {
                     roster: {
@@ -182,6 +128,23 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
                                   ],
                                 ],
                               },
+                              '1': {
+                                player: [[
+                                  { player_key: '449.p.11' },
+                                  { name: { full: 'Running Back Two' } },
+                                  { editorial_team_full_name: 'New York Jets' },
+                                  { display_position: 'RB' },
+                                ]],
+                              },
+                              '2': {
+                                player: [[
+                                  { player_key: '449.p.12' },
+                                  { name: { full: 'Mystery Player' } },
+                                  { editorial_team_abbr: 'XYZ' },
+                                  { editorial_team_logo: 'https://cdn.example/custom.png' },
+                                  { display_position: 'WR' },
+                                ]],
+                              },
                             },
                           },
                         ],
@@ -192,7 +155,7 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
               ],
             },
             '1': {
-              team: [[{ team_key: '449.l.123.t.2' }, { team_id: '2' }, { name: 'Team Two' }]],
+              team: [[{ team_key: '449.l.123.t.2' }, { team_id: '2' }, { name: 'Team Two' }, { team_points: { total: '999' } }]],
             },
           },
         },
@@ -240,10 +203,12 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
   assert.equal(snapshot.name, 'Current League');
   assert.equal(snapshot.season, 2024);
   assert.equal(snapshot.week, 4);
+  assert.equal(snapshot.logo, 'https://cdn.example/yahoo-league.png');
   assert.deepEqual(snapshot.matchups, [{ home: '449.l.123.t.1', away: '449.l.123.t.2' }]);
   assert.equal(snapshot.teams.length, 2);
   assert.equal(snapshot.teams[0].isUserTeam, true);
   assert.equal(snapshot.teams[0].points, 88.5);
+  assert.equal(snapshot.teams[1].points, 77.25);
   assert.equal(snapshot.teams[0].logo, 'https://cdn.example/fantasy-team.png');
   assert.deepEqual(snapshot.teams[0].players[0], {
     id: '449.p.10',
@@ -254,12 +219,125 @@ test('parses nested teams, live roster stats, points, and scoreboard matchups', 
     stats: { 'Passing yards': 250, 'Pass TD': 2 },
     headshot: 'https://cdn.example/qb.png',
     nflTeam: 'KC',
-    nflTeamLogo: 'https://cdn.example/kc.png',
+    nflTeamLogo: '/nfl/KC.png',
+  });
+  assert.equal(snapshot.teams[0].players[1].nflTeam, 'NYJ');
+  assert.equal(snapshot.teams[0].players[1].nflTeamLogo, '/nfl/NYJ.png');
+  assert.equal(snapshot.teams[0].players[2].nflTeamLogo, 'https://cdn.example/custom.png');
+});
+
+test('parser keeps optional Yahoo projections and win chance when supplied', () => {
+  const snapshot = parseYahooLeagueSnapshot({ league: [{ league_key: '449.l.1', name: 'League', current_week: '4',
+    teams: { team: [{ team_key: '449.l.1.t.1', name: 'Home', team_projected_points: { total: '90.5' },
+      roster: { players: { player: [{ player_key: '449.p.1', name: { full: 'One' }, selected_position: { position: 'QB' }, player_projected_points: { total: '20.5' } }] } } }] },
+    scoreboard: { matchups: { matchup: [{ home_win_probability: '62', teams: { team: [
+      { team_key: '449.l.1.t.1', name: 'Home' }, { team_key: '449.l.1.t.2', name: 'Away' },
+    ] } }] } },
+  }] }, '449.l.1', 2024);
+  assert.equal(snapshot.teams[0].projection, 90.5);
+  assert.equal(snapshot.teams[0].players[0].projection, 20.5);
+  assert.equal(snapshot.matchups[0].homeWinProbability, 62);
+});
+
+test('reads player projections from Yahoo roster tables, including bench players', () => {
+  const html = `<table><thead><tr><th>Pos</th><th>Player</th><th>Proj Pts</th><th>Proj</th></tr></thead><tbody>
+    <tr><td>QB</td><td><a data-ys-playerid="10">Player</a></td><td><div>20.37</div></td><td>21</td></tr>
+    <tr><td>BN</td><td><a data-ys-playerid="11">Bench</a></td><td>0.00</td><td>1</td></tr>
+    <tr><td>BN</td><td><a data-ys-playerid="12">Missing</a></td><td>–</td><td>1</td></tr>
+  </tbody></table>`;
+  assert.deepEqual([...parseYahooRosterProjections(html)], [['10', 20.37], ['11', 0]]);
+  const opponentHtml = `<table><thead><tr><th>Pos</th><th>Player</th><th>Action</th><th>Proj Pts</th></tr></thead><tbody>
+    <tr><td>QB</td><td><a data-ys-playerid="13">Opponent</a></td><td>Watch</td><td>Trade</td><td>19.25</td></tr>
+  </tbody></table>`;
+  assert.equal(parseYahooRosterProjections(opponentHtml).get('13'), 19.25);
+});
+
+test('reads win probability from the first Yahoo scoreboard team', () => {
+  const snapshot = parseYahooLeagueSnapshot({ league: [{ league_key: '449.l.1', name: 'League', current_week: '4' }] },
+    '449.l.1', 2024, { scoreboard: { matchups: { matchup: [{ teams: { team: [
+      { team_key: '449.l.1.t.1', win_probability: '0.62' }, { team_key: '449.l.1.t.2', win_probability: '0.38' },
+    ] } }] } } });
+  assert.equal(snapshot.matchups[0].homeWinProbability, 62);
+});
+
+test('fills missing player stats with zeroes and preserves Yahoo values', () => {
+  assert.deepEqual(playerStatsWithDefaults({
+    position: 'QB',
+    stats: { 'Passing yards': 250, 'Pass TD': 2, Interceptions: 1 },
+  }), {
+    'Passing attempts': 0,
+    'Passing completions': 0,
+    'Passing yards': 250,
+    'Passing touchdowns': 2,
+    'Passing interceptions': 1,
+    'Rushing attempts': 0,
+    'Rushing yards': 0,
+    'Rushing touchdowns': 0,
+    'Lost fumbles': 0,
   });
 });
 
+test('does not use stale roster totals when the scoreboard has no team score', () => {
+  const rosterPayload = { fantasy_content: { league: [
+    { league_key: '449.l.123' }, { name: 'League' }, { current_week: '4' },
+    { teams: { '0': { team: [
+      { team: [[{ team_key: '449.l.123.t.1' }, { name: 'Team One' }, { team_points: { total: '999' } }]] },
+      { team: [[{ team_key: '449.l.123.t.2' }, { name: 'Team Two' }, { team_points: { total: '888' } }]] },
+    ] } } },
+  ] } };
+  const scoreboardPayload = {
+    fantasy_content: {
+      league: [
+        { league_key: '449.l.123' },
+        {
+          scoreboard: {
+            '0': {
+              scoreboard: [
+                { week: '4' },
+                {
+                  matchups: {
+                    '0': {
+                      matchup: [{ teams: {
+                        '0': { team: [[{ team_key: '449.l.123.t.1' }, { name: 'Team One' }, { team_points: { total: '42' } }]] },
+                        '1': { team: [[{ team_key: '449.l.123.t.2' }, { name: 'Team Two' }]] },
+                      } }],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  };
+  const snapshot = parseYahooLeagueSnapshot(rosterPayload, '449.l.123', 2024, scoreboardPayload);
+  assert.equal(snapshot.teams.find((team) => team.id === '449.l.123.t.1')?.points, 42);
+  assert.equal(snapshot.teams.find((team) => team.id === '449.l.123.t.2')?.points, null);
+});
+
+test('keeps live roster fields joined to team metadata', () => {
+  const payload = { fantasy_content: { league: [
+    { league_key: '449.l.123' }, { name: 'League' }, { current_week: '4' },
+    { teams: { '0': { team: [
+      [{ team_key: '449.l.123.t.1' }, { name: 'Team' }],
+      { roster: [{ players: { '0': { player: [
+        [{ player_key: '449.p.10' }, { name: { full: 'Quarterback' } }],
+        { selected_position: [{ position: 'QB' }] },
+      ] } } }] },
+    ] } } },
+  ] } };
+  const snapshot = parseYahooLeagueSnapshot(payload, '449.l.123', 2024);
+  assert.equal(snapshot.teams[0].players[0].name, 'Quarterback');
+  assert.equal(snapshot.teams[0].players[0].slot, 'QB');
+});
+
+test('rejects unsafe Yahoo cookies before sending a request', async () => {
+  globalThis.fetch = (() => { throw new Error('request should not run'); }) as typeof fetch;
+  await assert.rejects(() => discoverYahooLeagues({ Y: 'bad\r\nX-Leak: yes', T: 'valid' }), /Invalid Yahoo session/);
+});
+
 test('fetches metadata first, then requests the current roster period and scoreboard', async () => {
-  process.env.APP_URL = 'https://league.example';
   const requests: { url: string; init?: RequestInit }[] = [];
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
@@ -285,7 +363,8 @@ test('fetches metadata first, then requests the current roster period and scoreb
             league: [
               {
                 teams: {
-                  '0': { team: [[{ team_key: '449.l.123.t.1' }, { name: 'Team One' }]] },
+                  '0': { team: [[{ team_key: '449.l.123.t.1' }, { name: 'Team One' }],
+                    { roster: { players: { '0': { player: [[{ player_key: '449.p.10' }, { name: { full: 'Player' } }]] } } } }] },
                 },
               },
             ],
@@ -293,17 +372,35 @@ test('fetches metadata first, then requests the current roster period and scoreb
         }),
       );
     }
+    if (url.includes('football.fantasysports.yahoo.com/2024/f1/123/1?')) {
+      return new Response('<table><tr><th>Player</th><th>Proj Pts</th></tr><tr><td><a data-ys-playerid="10">Player</a></td><td>17.5</td></tr></table>',
+        { headers: { 'content-type': 'text/html' } });
+    }
     assert.match(url, /\/scoreboard;week=4\?format=json$/);
     return new Response(JSON.stringify({ fantasy_content: { league: [{ scoreboard: [{ week: '4' }] }] } }));
   }) as typeof fetch;
 
-  const snapshot = await fetchYahooLeague('access-token', '449.l.123', 2024);
+  const snapshot = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024);
   assert.deepEqual(requests.map((request) => request.url), [
-    'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/settings?format=json',
-    'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/teams/roster;week=4/players/stats;type=week;week=4?format=json',
-    'https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/scoreboard;week=4?format=json',
+    'https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2/league/449.l.123/settings?format=json',
+    'https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2/league/449.l.123/teams/roster;week=4/players/stats;type=week;week=4?format=json',
+    'https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2/league/449.l.123/scoreboard;week=4?format=json',
+    'https://football.fantasysports.yahoo.com/2024/f1/123/1?stat1=GDD&stat2=M&week=4',
   ]);
   assert.ok(requests.every((request) => request.init?.redirect === 'manual'));
+  assert.ok(requests.every((request) => (request.init?.headers as Record<string, string>).cookie === 'Y=y-cookie; T=t-cookie'));
   assert.equal(snapshot.week, 4);
   assert.equal(snapshot.teams[0].id, '449.l.123.t.1');
+  assert.equal(snapshot.teams[0].players[0].projection, 17.5);
+  assert.ok(snapshot.yahooProjectionsAt);
+  requests.length = 0;
+  const refreshed = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024, snapshot);
+  assert.equal(requests.length, 3);
+  assert.equal(refreshed.teams[0].players[0].projection, 17.5);
+  assert.equal(refreshed.yahooProjectionsAt, snapshot.yahooProjectionsAt);
+  requests.length = 0;
+  const legacy = { ...snapshot, yahooProjectionsAt: undefined };
+  const seeded = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024, legacy);
+  assert.equal(requests.length, 3);
+  assert.equal(seeded.yahooProjectionsAt, snapshot.fetchedAt);
 });

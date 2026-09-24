@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { LeagueSnapshot, Provider } from "@/lib/types";
 import { Wordmark } from "@/components/Wordmark";
 import { MatchupGrid } from "@/components/LeagueViews";
+import { NflDrawer } from "@/components/NflDrawer";
 
 type Connection = { provider: Provider; status: string };
 type DashboardData = {
@@ -16,12 +16,16 @@ type DashboardData = {
   configured: { espn: boolean; yahoo: boolean };
 };
 type Notice = { kind: "error" | "success" | "info"; text: string };
-type EspnSession = { liveUrl: string; expiresAt?: string };
-type EspnLeagueOption = { id: string; name: string; season: number };
-type EspnImportFailure = EspnLeagueOption & { error: string };
-type YahooLeagueOption = { id: string; name: string; season: number };
+type LeagueOption = { id: string; name: string; season: number };
+type ImportFailure = LeagueOption & { error: string };
+type LeaguePickerState = { provider: Provider; options: LeagueOption[]; selected: string[] };
 
-const currentYear = new Date().getFullYear();
+const extensionStoreUrl = process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL;
+const LIVE_INTERVAL_MS = 30_000;
+const PANEL_MIN_WIDTH = 320;
+const PANEL_DEFAULT_WIDTH = 390;
+const panelWidthLimit = () => Math.max(PANEL_MIN_WIDTH, Math.min(900, (typeof window === "undefined" ? 1416 : window.innerWidth) - 656));
+const clampPanelWidth = (width: number) => Math.min(panelWidthLimit(), Math.max(PANEL_MIN_WIDTH, width));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -38,23 +42,17 @@ function normalizeDashboard(value: unknown): DashboardData | null {
   };
 }
 
-function normalizeEspnOptions(value: unknown, field: "leagues" | "availableLeagues"): EspnLeagueOption[] {
+function normalizeLeagueOptions(value: unknown, field: "leagues" | "availableLeagues"): LeagueOption[] {
   if (!isRecord(value) || !Array.isArray(value[field])) return [];
   return value[field].filter(isRecord).filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.season === "number" && Number.isInteger(item.season)).map((item) => ({ id: item.id as string, name: item.name as string, season: item.season as number }));
 }
 
-function espnOptionKey(option: Pick<EspnLeagueOption, "id" | "season">) {
+function optionKey(option: Pick<LeagueOption, "id" | "season">) {
   return `${option.id}:${option.season}`;
 }
 
 function prettyProvider(provider: Provider) {
   return provider === "espn" ? "ESPN" : "Yahoo";
-}
-
-function formatExpiry(value: string | undefined) {
-  if (!value) return "Hosted sign-in session";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Hosted sign-in session" : `Session expires ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
 
 function providerInitial(provider: Provider) {
@@ -74,7 +72,7 @@ async function safeApiMessage(response: Response, fallback: string) {
     // The status fallback is safer than exposing an unreadable response body.
   }
   if (response.status === 403) return "This private prototype is available to invited testers only.";
-  if (response.status === 503) return "This provider is not configured for the prototype yet.";
+  if (response.status === 503) return "Live scoring is temporarily unavailable.";
   return fallback;
 }
 
@@ -84,40 +82,69 @@ function providerStatus(data: DashboardData, provider: Provider) {
   return data.configured[provider] ? "Ready to connect" : "Setup needed";
 }
 
-export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "connections" }) {
+export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "settings" | "help" }) {
   const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
+  const hasData = data !== null;
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [liveMode, setLiveMode] = useState(false);
-  const [liveState, setLiveState] = useState("Live mode is off");
-  const [refreshing, setRefreshing] = useState(false);
-  const [showAddLeague, setShowAddLeague] = useState(false);
-  const [leagueProvider, setLeagueProvider] = useState<Provider>("espn");
-  const [leagueId, setLeagueId] = useState("");
-  const [season, setSeason] = useState(String(currentYear));
-  const [leagueBusy, setLeagueBusy] = useState(false);
+  const [liveState, setLiveState] = useState("Connecting to live scores");
+  const [compact, setCompact] = useState(false);
+  const [nflOpen, setNflOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH);
+  const dashboardShell = useRef<HTMLDivElement>(null);
+  const draggingWidth = useRef<number | null>(null);
+  const nflButton = useRef<HTMLButtonElement>(null);
+  const compactBeforeNfl = useRef(false);
+  const closeNfl = useCallback(() => { setCompact(compactBeforeNfl.current); setNflOpen(false); requestAnimationFrame(() => nflButton.current?.focus()); }, []);
+  const toggleNfl = () => {
+    if (nflOpen) return closeNfl();
+    compactBeforeNfl.current = compact;
+    setCompact(true);
+    setNflOpen(true);
+  };
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("nfl-panel-width"));
+    setPanelWidth(clampPanelWidth(saved || PANEL_DEFAULT_WIDTH));
+    const fitViewport = () => setPanelWidth((width) => clampPanelWidth(width));
+    window.addEventListener("resize", fitViewport);
+    return () => window.removeEventListener("resize", fitViewport);
+  }, []);
+  const resizePanel = (width: number) => {
+    const next = clampPanelWidth(width);
+    draggingWidth.current = next;
+    dashboardShell.current?.style.setProperty("--nfl-panel-width", `${next}px`);
+  };
+  const finishResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const width = draggingWidth.current;
+    if (width === null) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    draggingWidth.current = null;
+    setPanelWidth(width);
+    localStorage.setItem("nfl-panel-width", String(width));
+  };
+  const nudgePanel = (width: number) => {
+    const next = clampPanelWidth(width);
+    setPanelWidth(next);
+    localStorage.setItem("nfl-panel-width", String(next));
+  };
   const [connectionBusy, setConnectionBusy] = useState<Provider | null>(null);
-  const [espnSession, setEspnSession] = useState<EspnSession | null>(null);
-  const [espnBusy, setEspnBusy] = useState(false);
-  const [espnOptions, setEspnOptions] = useState<EspnLeagueOption[]>([]);
-  const [espnSelected, setEspnSelected] = useState<string[]>([]);
-  const [espnImporting, setEspnImporting] = useState(false);
-  const [yahooOptions, setYahooOptions] = useState<YahooLeagueOption[]>([]);
-  const [yahooDiscovering, setYahooDiscovering] = useState(false);
-  const [yahooImporting, setYahooImporting] = useState<string | null>(null);
+  const [extensionReady, setExtensionReady] = useState(false);
+  const [extensionPending, setExtensionPending] = useState<Provider | null>(null);
+  const extensionRequest = useRef<{ id: string; provider: Provider } | null>(null);
+  const [picker, setPicker] = useState<LeaguePickerState | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [discovering, setDiscovering] = useState<Provider | null>(null);
   const refreshInFlight = useRef(false);
-  const espnDiscoveryAttempted = useRef(false);
+  const pollingPaused = useRef(false);
 
   const routeToLogin = useCallback(() => {
-    setLiveMode(false);
     router.replace("/login");
   }, [router]);
 
-  const openEspnPicker = useCallback((options: EspnLeagueOption[]) => {
-    setEspnOptions(options);
-    setEspnSelected(options.map(espnOptionKey));
+  const openPicker = useCallback((provider: Provider, options: LeagueOption[]) => {
+    setPicker({ provider, options, selected: options.map(optionKey) });
   }, []);
 
   const setDashboard = useCallback((value: unknown) => {
@@ -153,56 +180,10 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "c
     void loadDashboard();
   }, [loadDashboard]);
 
-  useEffect(() => {
-    if (focus !== "connections" || loading || !data) return;
-    requestAnimationFrame(() => document.getElementById("connections")?.scrollIntoView({ block: "start" }));
-  }, [data, focus, loading]);
-
-  useEffect(() => {
-    if (!data || espnDiscoveryAttempted.current) return;
-    const connected = data.connections.some((item) => item.provider === "espn" && item.status.toLowerCase() !== "reconnect");
-    if (!connected || data.leagues.some((league) => league.provider === "espn")) return;
-    espnDiscoveryAttempted.current = true;
-    void (async () => {
-      try {
-        const response = await fetch("/api/espn/discover", { method: "POST", credentials: "same-origin" });
-        if (response.status === 401) return routeToLogin();
-        if (response.status === 409) {
-          setNotice({ kind: "error", text: await safeApiMessage(response, "Your ESPN authorization expired. Reconnect that account.") });
-          await loadDashboard(true);
-          return;
-        }
-        if (!response.ok) return;
-        const value = await response.json();
-        const next = normalizeDashboard(value);
-        if (next) setDashboard(next);
-        const options = normalizeEspnOptions(value, "availableLeagues");
-        if (options.length) {
-          openEspnPicker(options);
-          setNotice({ kind: "info", text: "ESPN connected. Choose which leagues to add." });
-        }
-      } catch {
-        // The connection remains usable; the next ESPN sign-in retries discovery.
-      }
-    })();
-  }, [data, loadDashboard, openEspnPicker, routeToLogin, setDashboard]);
-
-  useEffect(() => {
-    const error = new URLSearchParams(window.location.search).get("error");
-    if (error === "yahoo_scope") {
-      setNotice({ kind: "error", text: "Yahoo Fantasy API access is not enabled for this app. Apply at sports.yahoo.com/developer/access, then try again." });
-      window.history.replaceState({}, "", "/dashboard");
-    } else if (error === "yahoo_connection") {
-      setNotice({ kind: "error", text: "We couldn’t complete Yahoo sign-in. Please try again." });
-      window.history.replaceState({}, "", "/dashboard");
-    }
-  }, []);
-
-  const refreshDashboard = useCallback(async (fromLive = false) => {
-    if (refreshInFlight.current || document.visibilityState !== "visible") return 4000;
+  const refreshDashboard = useCallback(async () => {
+    if (refreshInFlight.current || document.visibilityState !== "visible") return LIVE_INTERVAL_MS;
     refreshInFlight.current = true;
-    setRefreshing(true);
-    if (fromLive) setLiveState("Refreshing…");
+    setLiveState("Updating scores…");
     try {
       const response = await fetch("/api/refresh", {
         method: "POST",
@@ -215,94 +196,61 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "c
       }
       if (response.status === 429) {
         const delay = safeRetryAfter(response);
-        if (fromLive) setLiveState(`Provider is pacing requests · retrying in ${Math.ceil(delay / 1000)}s`);
-        else setNotice({ kind: "info", text: "The provider is pacing requests. Try again in a moment." });
-        return delay;
+        setLiveState("Live updates delayed");
+        return Math.max(delay, LIVE_INTERVAL_MS);
       }
       if (response.status === 409) {
         const message = await safeApiMessage(response, "Your provider authorization expired. Reconnect the provider to continue.");
-        setLiveMode(false);
-        setNotice({ kind: "error", text: message });
+        pollingPaused.current = true;
+        setLiveState("Updates paused");
+        setNotice({ kind: "error", text: `${message} Reconnect from Settings to resume live updates.` });
         void loadDashboard(true);
         return 0;
       }
       if (!response.ok) {
-        const message = await safeApiMessage(response, "We couldn’t refresh right now. Your last view is still here.");
-        if (fromLive) {
-          setLiveMode(false);
-          setNotice({ kind: "error", text: `${message} Live mode is paused; use Refresh to try again.` });
-        } else setNotice({ kind: "error", text: message });
-        return fromLive ? 0 : 4000;
+        const message = await safeApiMessage(response, "We couldn’t update live scores.");
+        setLiveState("Live updates delayed");
+        setNotice({ kind: "error", text: `${message} Retrying automatically.` });
+        return LIVE_INTERVAL_MS;
       }
       if (!setDashboard(await response.json())) throw new Error("refresh");
       const updated = `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-      if (fromLive) setLiveState(updated);
-      else setNotice({ kind: "success", text: updated });
-      return 4000;
+      pollingPaused.current = false;
+      setNotice((current) => current?.kind === "error" ? null : current);
+      setLiveState(updated);
+      return LIVE_INTERVAL_MS;
     } catch {
-      if (fromLive) {
-        setLiveMode(false);
-        setNotice({ kind: "error", text: "We couldn’t refresh right now. Live mode is paused; your last view is still here." });
-      } else setNotice({ kind: "error", text: "We couldn’t refresh right now. Your last view is still here." });
-      return fromLive ? 0 : 4000;
+      setLiveState("Live updates delayed");
+      setNotice({ kind: "error", text: "We couldn’t update live scores. Retrying automatically." });
+      return LIVE_INTERVAL_MS;
     } finally {
       refreshInFlight.current = false;
-      setRefreshing(false);
     }
   }, [loadDashboard, routeToLogin, setDashboard]);
 
   useEffect(() => {
-    if (!liveMode) {
-      setLiveState("Live mode is off");
-      return;
-    }
+    if (focus !== "overview" || loading || !hasData) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      if (cancelled) return;
-      const delay = await refreshDashboard(true);
-      if (!cancelled && liveMode && delay !== 0) timer = setTimeout(() => void poll(), delay);
+      if (cancelled || pollingPaused.current || document.visibilityState !== "visible") return;
+      const delay = await refreshDashboard();
+      if (!cancelled && !pollingPaused.current && delay !== 0) timer = setTimeout(() => void poll(), delay);
     };
+    const resume = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      pollingPaused.current = false;
+      void poll();
+    };
+    document.addEventListener("visibilitychange", resume);
     void poll();
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
     };
-  }, [liveMode, refreshDashboard]);
-
-  const submitLeague = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const cleanId = leagueId.trim();
-    const year = Number(season);
-    if (!cleanId) {
-      setNotice({ kind: "error", text: "Enter a league ID to add a league." });
-      return;
-    }
-    if (!Number.isInteger(year) || year < 2000 || year > currentYear + 1) {
-      setNotice({ kind: "error", text: "Enter a valid season year." });
-      return;
-    }
-    setLeagueBusy(true);
-    setNotice(null);
-    try {
-      const response = await fetch("/api/leagues", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider: leagueProvider, leagueId: cleanId, season: year }),
-        credentials: "same-origin",
-      });
-      if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t add that league. Check the ID and try again."));
-      setShowAddLeague(false);
-      setLeagueId("");
-      setNotice({ kind: "success", text: "League added. Loading its first snapshot…" });
-      await loadDashboard(true);
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "We couldn’t add that league. Check the ID and try again." });
-    } finally {
-      setLeagueBusy(false);
-    }
-  };
+  }, [focus, hasData, loading, refreshDashboard]);
 
   const disconnect = async (provider: Provider) => {
     setConnectionBusy(provider);
@@ -325,125 +273,104 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "c
     }
   };
 
-  const startEspn = async () => {
-    setEspnBusy(true);
-    setNotice(null);
-    setEspnOptions([]);
-    setEspnSelected([]);
-    try {
-      const response = await fetch("/api/espn/start", { method: "POST", credentials: "same-origin" });
-      if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t start the hosted ESPN sign-in. Please try again."));
-      const value: unknown = await response.json();
-      if (!isRecord(value) || typeof value.liveUrl !== "string" || !value.liveUrl) throw new Error("espn");
-      setEspnSession({ liveUrl: value.liveUrl, expiresAt: typeof value.expiresAt === "string" ? value.expiresAt : undefined });
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "We couldn’t start the hosted ESPN sign-in. Please try again." });
-    } finally {
-      setEspnBusy(false);
+  const startExtension = useCallback((provider: Provider, openLogin = true) => {
+    setExtensionPending(provider);
+    if (!extensionReady) {
+      setNotice({ kind: "info", text: "Install the Too Many Leagues Chrome connector, then reload this page to connect." });
+      return;
     }
-  };
+    setPicker(null);
+    const id = crypto.randomUUID();
+    extensionRequest.current = { id, provider };
+    setConnectionBusy(provider);
+    setNotice(null);
+    window.postMessage({ source: "too-many-leagues-app", id, action: "connect", provider, openLogin }, location.origin);
+  }, [extensionReady]);
 
-  const finishEspn = async (cancel = false) => {
-    setEspnBusy(true);
-    try {
-      const response = await fetch(cancel ? "/api/espn/cancel" : "/api/espn/complete", { method: "POST", credentials: "same-origin" });
-      if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t update the ESPN connection. Please try again."));
-      const value: unknown = await response.json();
-      const options = cancel ? [] : normalizeEspnOptions(value, "leagues");
-      setEspnSession(null);
-      setShowAddLeague(false);
-      espnDiscoveryAttempted.current = true;
-      if (options.length) {
-        openEspnPicker(options);
-        setNotice({ kind: "info", text: "ESPN connected. Choose which leagues to add." });
-      } else setNotice({ kind: cancel ? "info" : "success", text: cancel ? "ESPN sign-in canceled." : "ESPN connected, but no leagues were found. You can use Add league ID as a fallback." });
-      if (!cancel) await loadDashboard(true);
-    } catch (error) {
-      if (!cancel) setEspnSession(null);
-      setNotice({ kind: "error", text: `${error instanceof Error ? error.message : "We couldn’t update the ESPN connection."}${cancel ? "" : " Open a new ESPN sign-in window to try again."}` });
-    } finally {
-      setEspnBusy(false);
-    }
-  };
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.origin !== location.origin || !isRecord(event.data) || event.data.source !== "too-many-leagues-connector") return;
+      if (event.data.status === "available") { setExtensionReady(true); return; }
+      const pending = extensionRequest.current;
+      if (!pending || event.data.id !== pending.id) return;
+      extensionRequest.current = null;
+      setConnectionBusy(null);
+      if (event.data.status === "login-required") {
+        setNotice({ kind: "info", text: `Sign in to ${prettyProvider(pending.provider)} in the new tab, then return here. We’ll continue automatically.` });
+        return;
+      }
+      if (event.data.status !== "connected") {
+        const result = isRecord(event.data.result) ? event.data.result : {};
+        if (result.status === 401) { routeToLogin(); return; }
+        setNotice({ kind: "error", text: typeof result.error === "string" ? result.error : `Could not connect ${prettyProvider(pending.provider)}. Try again.` });
+        return;
+      }
+      const options = normalizeLeagueOptions(event.data.result, "leagues");
+      setExtensionPending(null);
+      if (options.length) openPicker(pending.provider, options);
+      setNotice({ kind: options.length ? "info" : "success", text: options.length ? `${prettyProvider(pending.provider)} connected. Choose which leagues to add.` : `${prettyProvider(pending.provider)} connected, but no leagues were found.` });
+      void loadDashboard(true);
+    };
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source: "too-many-leagues-app", action: "ping", id: "ready" }, location.origin);
+    return () => window.removeEventListener("message", onMessage);
+  }, [loadDashboard, openPicker, routeToLogin]);
 
-  const importEspn = async () => {
-    const selected = espnOptions.filter((option) => espnSelected.includes(espnOptionKey(option)));
-    setEspnImporting(true);
+  useEffect(() => {
+    if (!extensionPending || !extensionReady) return;
+    const retry = () => { if (document.visibilityState === "visible" && !extensionRequest.current) startExtension(extensionPending, false); };
+    document.addEventListener("visibilitychange", retry);
+    return () => document.removeEventListener("visibilitychange", retry);
+  }, [extensionPending, extensionReady, startExtension]);
+
+  const importSelected = async () => {
+    if (!picker) return;
+    const selected = picker.options.filter((option) => picker.selected.includes(optionKey(option)));
+    setImporting(true);
     setNotice(null);
     try {
-      const response = await fetch("/api/espn/import", {
+      const response = await fetch(`/api/${picker.provider}/import`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ leagues: selected }),
         credentials: "same-origin",
       });
       if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t add those ESPN leagues."));
+      if (!response.ok) throw new Error(await safeApiMessage(response, `We couldn’t add those ${prettyProvider(picker.provider)} leagues.`));
       const value: unknown = await response.json();
       const imported = isRecord(value) && typeof value.imported === "number" ? value.imported : selected.length;
-      const failed: EspnImportFailure[] = isRecord(value) && Array.isArray(value.failed) ? value.failed.filter(isRecord).filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.season === "number" && typeof item.error === "string").map((item) => ({ id: item.id as string, name: item.name as string, season: item.season as number, error: item.error as string })) : [];
+      const failed: ImportFailure[] = isRecord(value) && Array.isArray(value.failed) ? value.failed.filter(isRecord).filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.season === "number" && typeof item.error === "string").map((item) => ({ id: item.id as string, name: item.name as string, season: item.season as number, error: item.error as string })) : [];
       if (failed.length) {
-        setEspnSelected(failed.map(espnOptionKey));
+        setPicker((current) => current ? { ...current, selected: failed.map(optionKey) } : null);
         setNotice({ kind: "error", text: `${imported ? `Added ${imported} league${imported === 1 ? "" : "s"}. ` : ""}Couldn’t load ${failed.map((item) => item.name).join(", ")}. ${failed[0].error} Try again.` });
         await loadDashboard(true);
         return;
       }
-      setEspnOptions([]);
-      setEspnSelected([]);
-      setNotice({ kind: "success", text: imported ? `Added ${imported} ESPN league${imported === 1 ? "" : "s"}.` : "No ESPN leagues added." });
+      setPicker(null);
+      setNotice({ kind: "success", text: imported ? `Added ${imported} ${prettyProvider(picker.provider)} league${imported === 1 ? "" : "s"}.` : `No ${prettyProvider(picker.provider)} leagues added.` });
       await loadDashboard(true);
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "We couldn’t add those ESPN leagues." });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : `We couldn’t add those ${prettyProvider(picker.provider)} leagues.` });
     } finally {
-      setEspnImporting(false);
+      setImporting(false);
     }
   };
 
-  const skipEspn = () => {
-    setEspnOptions([]);
-    setEspnSelected([]);
-    setNotice({ kind: "info", text: "No ESPN leagues added." });
-  };
-
-  const discoverYahoo = async () => {
-    setYahooDiscovering(true);
+  const discoverLeagues = async (provider: Provider) => {
+    setDiscovering(provider);
     setNotice(null);
     try {
-      const response = await fetch("/api/yahoo/discover", { method: "POST", credentials: "same-origin" });
+      const response = await fetch(`/api/${provider}/discover`, { method: "POST", credentials: "same-origin" });
       if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t discover your Yahoo leagues."));
-      const value: unknown = await response.json();
-      const leagues = isRecord(value) && Array.isArray(value.leagues) ? value.leagues.filter(isRecord).filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.season === "number").map((item) => ({ id: item.id as string, name: item.name as string, season: item.season as number })) : [];
-      setYahooOptions(leagues);
-      setNotice({ kind: "info", text: leagues.length ? "Choose a Yahoo league to import below." : "Yahoo did not return any leagues for this account." });
+      if (response.status === 409) await loadDashboard(true);
+      if (!response.ok) throw new Error(await safeApiMessage(response, `We couldn’t discover your ${prettyProvider(provider)} leagues.`));
+      const leagues = normalizeLeagueOptions(await response.json(), provider === "espn" ? "availableLeagues" : "leagues");
+      if (leagues.length) openPicker(provider, leagues);
+      setNotice({ kind: "info", text: leagues.length ? `Choose which ${prettyProvider(provider)} leagues to add.` : `${prettyProvider(provider)} did not return any leagues for this account.` });
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "We couldn’t discover your Yahoo leagues." });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : `We couldn’t discover your ${prettyProvider(provider)} leagues.` });
     } finally {
-      setYahooDiscovering(false);
-    }
-  };
-
-  const importYahoo = async (option: YahooLeagueOption) => {
-    setYahooImporting(option.id);
-    setNotice(null);
-    try {
-      const response = await fetch("/api/leagues", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider: "yahoo", leagueId: option.id, season: option.season }),
-        credentials: "same-origin",
-      });
-      if (response.status === 401) return routeToLogin();
-      if (!response.ok) throw new Error(await safeApiMessage(response, "We couldn’t import that Yahoo league."));
-      setYahooOptions((items) => items.filter((item) => !(item.id === option.id && item.season === option.season)));
-      setNotice({ kind: "success", text: `${option.name} imported. Loading its snapshot…` });
-      await loadDashboard(true);
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : "We couldn’t import that Yahoo league." });
-    } finally {
-      setYahooImporting(null);
+      setDiscovering(null);
     }
   };
 
@@ -452,63 +379,58 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "c
   if (!data) return <DashboardError message="Your dashboard data is unavailable. Please sign in again." onRetry={() => void loadDashboard()} />;
 
   return (
-    <div className="dashboard-shell">
+    <div ref={dashboardShell} className={`dashboard-shell${nflOpen ? " has-nfl-drawer" : focus === "overview" ? " has-nfl-launch" : ""}`} style={{ "--nfl-panel-width": `${panelWidth}px` } as CSSProperties}>
       <main className="dashboard-main" id="overview">
         <header className="dashboard-topbar">
           <Link href="/" className="dashboard-brand"><Wordmark /></Link>
           <nav className="dashboard-nav" aria-label="Dashboard sections">
             <Link href="/dashboard" className={`dashboard-nav-link${focus === "overview" ? " active" : ""}`}>Game center</Link>
-            <Link href="/dashboard/connections" className={`dashboard-nav-link${focus === "connections" ? " active" : ""}`}>Connections</Link>
+            <Link href="/dashboard/settings" className={`dashboard-nav-link${focus === "settings" ? " active" : ""}`}>Settings</Link>
+            <Link href="/dashboard/help" className={`dashboard-nav-link${focus === "help" ? " active" : ""}`}>Help</Link>
           </nav>
-          <div className="dashboard-user"><span className="preview-tag">PRIVATE PREVIEW</span><span className="user-email">{data?.user.email}</span><form action="/auth/logout" method="post"><button type="submit" className="mobile-signout">Sign out</button></form></div>
+          <div className="dashboard-user"><span className="user-email">{data.user.email}</span><form action="/auth/logout" method="post"><button type="submit" className="mobile-signout">Sign out</button></form></div>
         </header>
         <div className="dashboard-content">
           <header className="dashboard-heading">
-            <div><p className="eyebrow">LEAGUE OVERVIEW</p><h1>Your leagues</h1><p>Matchups, lineups, and live scoring.</p></div>
-            <div className="dashboard-actions"><button className="button button-outline" type="button" onClick={() => void refreshDashboard()} disabled={refreshing}>{refreshing ? "Refreshing…" : "↻ Refresh"}</button><button className={`live-toggle${liveMode ? " is-on" : ""}`} type="button" aria-pressed={liveMode} onClick={() => setLiveMode((value) => !value)}><span className="live-toggle-dot" /> Live mode</button></div>
+            <div>{focus !== "overview" ? <p className="eyebrow">{focus.toUpperCase()}</p> : null}<h1>{focus === "overview" ? "Matchups" : focus === "settings" ? "Settings" : "Help"}</h1></div>
+            {focus === "overview" ? <div className="dashboard-heading-actions"><span className={`dashboard-live-status${liveState === "Updates paused" ? " is-paused" : ""}`} role="status"><b className="status-dot" /> {liveState}</span><button className="compact-view-toggle" type="button" aria-pressed={compact} onClick={() => setCompact((value) => !value)}>Compact View {compact ? "On" : "Off"}</button></div> : null}
           </header>
 
-          <section className="dashboard-matchups" aria-labelledby="dashboard-matchups-title"><div className="section-heading-row"><div><p className="eyebrow">YOUR LEAGUES</p><h2 id="dashboard-matchups-title">Your matchups</h2></div><span className="section-caption">{data.leagues.length} {data.leagues.length === 1 ? "league" : "leagues"} · {liveMode ? "LIVE REFRESH ON" : "SNAPSHOT VIEW"}</span></div><MatchupGrid leagues={data.leagues} personalOnly /></section>
+          {notice && !extensionPending && !picker ? <div className={`dashboard-notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i"}</span>{notice.text}<button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div> : null}
 
-          {notice ? <div className={`dashboard-notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i"}</span>{notice.text}<button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div> : null}
-
-          <section className="connection-area" id="connections" aria-labelledby="connections-title">
-            <div className="section-heading-row"><div><p className="eyebrow">SOURCES</p><h2 id="connections-title">Your connections</h2></div><span className="section-caption">{data?.connections.length ?? 0} connected</span></div>
+          {focus === "overview" ? <div className={`dashboard-game-layout${nflOpen ? " has-drawer" : ""}`}>{nflOpen ? <><NflDrawer leagues={data.leagues} onClose={closeNfl} /><div className="nfl-resize-handle" role="separator" aria-label="Resize NFL scores" aria-orientation="vertical" aria-valuemin={PANEL_MIN_WIDTH} aria-valuemax={panelWidthLimit()} aria-valuenow={panelWidth} tabIndex={0} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); resizePanel(event.clientX); }} onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) resizePanel(event.clientX); }} onPointerUp={finishResize} onPointerCancel={finishResize} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); nudgePanel(panelWidth + (event.key === "ArrowRight" ? 16 : -16)); } }} /></> : null}<section className="dashboard-matchups" aria-label="League matchups"><MatchupGrid leagues={data.leagues} personalOnly compact={compact} /></section></div> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
+            <details open><summary>What is the smaller number beneath a score?</summary><p>It is the latest fantasy point projection supplied by your connected provider. A dash means that provider has not supplied one.</p></details>
+            <details><summary>What do the green and red changes mean?</summary><p>Green means the current projection is higher than the saved pregame projection; red means it is lower. The number shows the change in fantasy points.</p></details>
+            <details><summary>Why is there no colored change for my league?</summary><p>We can save a pregame comparison only when a league is connected and projections are available before the first NFL game of the week starts. Leagues connected later still show available live projections, without a comparison for that week.</p></details>
+            <details><summary>Why is win chance missing?</summary><p>Win chance appears only when your fantasy provider supplies a matchup percentage. We do not calculate our own odds.</p></details>
+          </section> : <section className="connection-area" aria-labelledby="connections-title">
+            <div className="section-heading-row"><h2 id="connections-title">Connections</h2><span className="section-caption">{data.connections.length} connected</span></div>
+            <p className="connection-disclosure">Manage the provider accounts used for live scoring.</p>
             <div className="connection-grid">
-              <ConnectionCard provider="espn" configured={data?.configured.espn === true} status={providerStatus(data!, "espn")} busy={connectionBusy === "espn" || espnBusy} onConnect={() => void startEspn()} onDisconnect={() => void disconnect("espn")} connected={Boolean(data?.connections.some((item) => item.provider === "espn"))} reconnect={providerStatus(data!, "espn").toLowerCase() === "reconnect"} />
-              <ConnectionCard provider="yahoo" configured={data?.configured.yahoo === true} status={providerStatus(data!, "yahoo")} busy={connectionBusy === "yahoo" || yahooDiscovering} onConnect={() => { window.location.assign("/api/yahoo/connect"); }} onDisconnect={() => void disconnect("yahoo")} onDiscover={() => void discoverYahoo()} connected={Boolean(data?.connections.some((item) => item.provider === "yahoo"))} reconnect={providerStatus(data!, "yahoo").toLowerCase() === "reconnect"} />
+              <ConnectionCard provider="espn" configured={data.configured.espn} status={providerStatus(data, "espn")} busy={connectionBusy === "espn" || discovering === "espn"} onConnect={() => startExtension("espn")} onDisconnect={() => void disconnect("espn")} onDiscover={() => void discoverLeagues("espn")} connected={Boolean(data.connections.some((item) => item.provider === "espn"))} reconnect={providerStatus(data, "espn").toLowerCase() === "reconnect"} />
+              <ConnectionCard provider="yahoo" configured={data.configured.yahoo} status={providerStatus(data, "yahoo")} busy={connectionBusy === "yahoo" || discovering === "yahoo"} onConnect={() => startExtension("yahoo")} onDisconnect={() => void disconnect("yahoo")} onDiscover={() => void discoverLeagues("yahoo")} connected={Boolean(data.connections.some((item) => item.provider === "yahoo"))} reconnect={providerStatus(data, "yahoo").toLowerCase() === "reconnect"} />
             </div>
-          </section>
+          </section>}
 
-          {yahooOptions.length ? <YahooPicker options={yahooOptions} importing={yahooImporting} onImport={(option) => void importYahoo(option)} onClose={() => setYahooOptions([])} /> : null}
+          {extensionPending ? <div className="espn-modal-backdrop"><section className={`espn-modal provider-${extensionPending}`} role="dialog" aria-modal="true" aria-labelledby="connector-panel-title"><div className="espn-modal-head"><div><p className="eyebrow">CHROME CONNECTOR</p><h2 id="connector-panel-title">Connect {prettyProvider(extensionPending)}</h2></div><button className="icon-button" type="button" aria-label="Close connection instructions" onClick={() => { setExtensionPending(null); extensionRequest.current = null; setConnectionBusy(null); }}>×</button></div><p className="espn-modal-copy">{connectionBusy ? `Checking your ${prettyProvider(extensionPending)} account…` : extensionReady ? notice?.kind === "info" ? notice.text : `Sign in to ${prettyProvider(extensionPending)} in the provider tab if needed. Return here when you’re done; we’ll finish connecting automatically.` : "Install the Too Many Leagues Chrome connector, then reload this page."}</p>{!extensionReady ? extensionStoreUrl ? <p className="espn-modal-copy"><a href={extensionStoreUrl} target="_blank" rel="noopener noreferrer">Install the Chrome connector ↗</a></p> : <p className="espn-modal-copy">Preview install: open <code>chrome://extensions</code>, turn on Developer mode, choose Load unpacked, and select the <code>extension</code> folder from this project.</p> : null}{notice?.kind === "error" ? <p className="espn-modal-error" role="alert">{notice.text}</p> : null}{extensionReady ? <div className="espn-modal-actions"><button type="button" className="button button-primary" onClick={() => startExtension(extensionPending, false)} disabled={connectionBusy !== null}>{connectionBusy ? "Checking…" : "I’ve signed in — connect"}</button></div> : null}</section></div> : null}
 
-          {espnSession ? <section className="espn-panel" aria-labelledby="espn-panel-title"><div className="espn-panel-head"><div><p className="eyebrow">HOSTED REMOTE BROWSER</p><h2 id="espn-panel-title">Connect ESPN</h2></div><button className="icon-button" type="button" aria-label="Close ESPN sign-in" onClick={() => void finishEspn(true)} disabled={espnBusy}>×</button></div><p className="espn-explanation">This window is a hosted remote browser showing ESPN’s sign-in page. Enter credentials only on ESPN’s page. Too Many Leagues does not capture or log your password. {formatExpiry(espnSession.expiresAt)}.</p><div className="espn-panel-actions"><button type="button" className="button button-primary" onClick={() => void finishEspn(false)} disabled={espnBusy}>{espnBusy ? "Checking…" : "I’m finished signing in — import leagues"}</button><button type="button" className="text-button" onClick={() => void finishEspn(true)} disabled={espnBusy}>Cancel</button></div><iframe className="espn-frame" title="Hosted ESPN sign-in" src={espnSession.liveUrl} sandbox="allow-forms allow-same-origin allow-scripts" referrerPolicy="no-referrer" /></section> : null}
+          {picker ? <LeaguePicker picker={picker} importing={importing} onToggle={(option) => { const key = optionKey(option); setPicker((current) => current ? { ...current, selected: current.selected.includes(key) ? current.selected.filter((item) => item !== key) : [...current.selected, key] } : null); }} onImport={() => void importSelected()} onClose={() => setPicker(null)} error={notice?.kind === "error" ? notice.text : null} /> : null}
 
-          {espnOptions.length ? <EspnLeaguePicker options={espnOptions} selected={espnSelected} importing={espnImporting} onToggle={(option) => { const key = espnOptionKey(option); setEspnSelected((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]); }} onImport={() => void importEspn()} onClose={skipEspn} /> : null}
-
-          <section className="leagues-area" aria-labelledby="leagues-title">
-            <div className="section-heading-row"><div><p className="eyebrow">MANAGE LEAGUES</p><h2 id="leagues-title">Add a league manually</h2></div><button type="button" className="button button-outline button-small" onClick={() => setShowAddLeague((value) => !value)}>{showAddLeague ? "Close" : "+ Add league ID"}</button></div>
-            {showAddLeague ? <form className="add-league-form" onSubmit={submitLeague}><div className="form-intro"><span className="form-icon">+</span><div><h3>Manual league ID fallback</h3><p>ESPN leagues are imported automatically after sign-in. Use this for a league that is not listed on your account page.</p></div></div><div className="form-fields"><label>Provider<select value={leagueProvider} onChange={(event) => setLeagueProvider(event.target.value as Provider)}><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label><label>League ID<input value={leagueId} onChange={(event) => setLeagueId(event.target.value)} placeholder="e.g. 12345678" autoComplete="off" /></label><label>Season<input value={season} onChange={(event) => setSeason(event.target.value)} inputMode="numeric" /></label><button className="button button-primary" type="submit" disabled={leagueBusy}>{leagueBusy ? "Adding…" : "Add league"}</button></div></form> : null}
-          </section>
-
-          <footer className="dashboard-footer"><span>{liveMode ? <><b className="status-dot" /> {liveState}</> : "Snapshots are shown from your last successful refresh."}</span><span>Too Many Leagues · private prototype</span></footer>
         </div>
       </main>
+      {focus === "overview" && !nflOpen ? <button ref={nflButton} className="nfl-vertical-button" type="button" aria-label="Open NFL scores" aria-controls="nfl-drawer" aria-expanded={false} onClick={toggleNfl}><span>NFL</span><b aria-hidden="true">›</b></button> : null}
     </div>
   );
 }
 
-function ConnectionCard({ provider, configured, status, connected, reconnect, busy, onConnect, onDisconnect, onDiscover }: { provider: Provider; configured: boolean; status: string; connected: boolean; reconnect: boolean; busy: boolean; onConnect: () => void; onDisconnect: () => void; onDiscover?: () => void }) {
+function ConnectionCard({ provider, configured, status, connected, reconnect, busy, onConnect, onDisconnect, onDiscover }: { provider: Provider; configured: boolean; status: string; connected: boolean; reconnect: boolean; busy: boolean; onConnect: () => void; onDisconnect: () => void; onDiscover: () => void }) {
   const label = prettyProvider(provider);
-  return <article className={`connection-card connection-${provider}`}><div className="connection-card-top"><span className={`connection-logo provider-${provider}`}>{providerInitial(provider)}</span><span className={`connection-status${connected && !reconnect ? " connected" : ""}`}><b /> {status}</span></div><h3>{label}</h3><p>{reconnect ? "Authorization expired. Reconnect to keep this provider current." : connected ? provider === "espn" ? "After sign-in, choose which ESPN leagues to add." : "Connected account can power your league snapshots." : configured ? "Connect a provider account to pull in league data." : "Provider setup is missing for this private prototype."}</p><div className={`connection-card-actions${connected ? " connection-actions-connected" : ""}`}>{connected && provider === "yahoo" && !reconnect && onDiscover ? <button className="text-button discover-button" type="button" onClick={onDiscover} disabled={busy}>{busy ? "Discovering…" : "Discover leagues"}</button> : null}{connected && !reconnect ? <button className="text-button danger-button" type="button" onClick={onDisconnect} disabled={busy}>{busy ? "Disconnecting…" : "Disconnect"}</button> : reconnect ? <><button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? `Reconnect ${label} ↗` : "Unavailable"}</button><button className="text-button danger-button" type="button" onClick={onDisconnect} disabled={busy}>Disconnect</button></> : provider === "yahoo" ? <button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? "Connect Yahoo ↗" : "Unavailable"}</button> : <button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? "Connect ESPN ↗" : "Unavailable"}</button>}</div></article>;
+  return <article className={`connection-card connection-${provider}`}><div className="connection-card-top"><span className={`connection-logo provider-${provider}`}>{providerInitial(provider)}</span><span className={`connection-status${connected && !reconnect ? " connected" : ""}`}><b /> {status}</span></div><h3>{label}</h3><p>{reconnect ? "Authorization expired. Reconnect to keep this provider current." : connected ? "Discover more leagues from this account." : configured ? "Connect a provider account to pull in league data." : "Provider setup is missing for this private prototype."}</p><div className={`connection-card-actions${connected ? " connection-actions-connected" : ""}`}>{connected && !reconnect ? <><button className="text-button discover-button" type="button" onClick={onDiscover} disabled={busy}>{busy ? "Discovering…" : "Discover leagues"}</button><button className="text-button danger-button" type="button" onClick={onDisconnect} disabled={busy}>{busy ? "Disconnecting…" : "Disconnect"}</button></> : reconnect ? <><button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? `Reconnect ${label} ↗` : "Unavailable"}</button><button className="text-button danger-button" type="button" onClick={onDisconnect} disabled={busy}>Disconnect</button></> : provider === "yahoo" ? <button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? "Connect Yahoo ↗" : "Unavailable"}</button> : <button className="button button-small button-dark" type="button" onClick={onConnect} disabled={!configured || busy}>{busy ? "Opening…" : configured ? "Connect ESPN ↗" : "Unavailable"}</button>}</div></article>;
 }
 
-function YahooPicker({ options, importing, onImport, onClose }: { options: YahooLeagueOption[]; importing: string | null; onImport: (option: YahooLeagueOption) => void; onClose: () => void }) {
-  return <section className="yahoo-picker" aria-labelledby="yahoo-picker-title"><div className="yahoo-picker-head"><div><p className="eyebrow">YAHOO LEAGUES</p><h2 id="yahoo-picker-title">Choose what to import</h2></div><button className="icon-button light-icon-button" type="button" aria-label="Close Yahoo league picker" onClick={onClose}>×</button></div><div className="yahoo-picker-list">{options.map((option) => <div className="yahoo-picker-row" key={`${option.id}-${option.season}`}><div><strong>{option.name}</strong><small>{option.season} season · {option.id}</small></div><button className="button button-small button-primary" type="button" onClick={() => onImport(option)} disabled={Boolean(importing)}>{importing === option.id ? "Importing…" : "Import"}</button></div>)}</div></section>;
-}
-
-function EspnLeaguePicker({ options, selected, importing, onToggle, onImport, onClose }: { options: EspnLeagueOption[]; selected: string[]; importing: boolean; onToggle: (option: EspnLeagueOption) => void; onImport: () => void; onClose: () => void }) {
-  return <div className="espn-modal-backdrop"><section className="espn-modal" role="dialog" aria-modal="true" aria-labelledby="espn-picker-title"><div className="espn-modal-head"><div><p className="eyebrow">ESPN LEAGUES</p><h2 id="espn-picker-title">Choose leagues to add</h2></div><button className="icon-button" type="button" aria-label="Skip ESPN league selection" onClick={onClose} disabled={importing}>×</button></div><p className="espn-modal-copy">We found these leagues on your ESPN account. Select the ones you want in Too Many Leagues.</p><div className="espn-modal-list">{options.map((option) => { const key = espnOptionKey(option); return <label className="espn-modal-option" key={key}><input type="checkbox" checked={selected.includes(key)} onChange={() => onToggle(option)} disabled={importing} /><span><strong>{option.name}</strong><small>{option.season} season · {option.id}</small></span></label>; })}</div><div className="espn-modal-actions"><button className="button button-primary" type="button" onClick={onImport} disabled={!selected.length || importing}>{importing ? "Adding…" : `Add ${selected.length} selected`}</button><button className="text-button" type="button" onClick={onClose} disabled={importing}>Skip for now</button></div></section></div>;
+function LeaguePicker({ picker, importing, onToggle, onImport, onClose, error }: { picker: LeaguePickerState; importing: boolean; onToggle: (option: LeagueOption) => void; onImport: () => void; onClose: () => void; error: string | null }) {
+  const label = prettyProvider(picker.provider);
+  return <div className="espn-modal-backdrop"><section className={`espn-modal provider-${picker.provider}`} role="dialog" aria-modal="true" aria-labelledby="league-picker-title"><div className="espn-modal-head"><div><p className="eyebrow">{label.toUpperCase()} LEAGUES</p><h2 id="league-picker-title">Choose leagues to add</h2></div><button className="icon-button" type="button" aria-label={`Skip ${label} league selection`} onClick={onClose} disabled={importing}>×</button></div><p className="espn-modal-copy">We found these leagues on your {label} account. Select the ones you want in Too Many Leagues.</p>{error ? <p className="espn-modal-error" role="alert">{error}</p> : null}<div className="espn-modal-list">{picker.options.map((option) => { const key = optionKey(option); return <label className="espn-modal-option" key={key}><input type="checkbox" checked={picker.selected.includes(key)} onChange={() => onToggle(option)} disabled={importing} /><span><strong>{option.name}</strong><small>{option.season} season · {option.id}</small></span></label>; })}</div><div className="espn-modal-actions"><button className="button button-primary" type="button" onClick={onImport} disabled={!picker.selected.length || importing}>{importing ? "Adding…" : `Add ${picker.selected.length} selected`}</button><button className="text-button" type="button" onClick={onClose} disabled={importing}>Skip for now</button></div></section></div>;
 }
 
 function LoadingDashboard() {

@@ -1,17 +1,13 @@
 import { AppError } from './security';
+import { nflTeamLogoUrl, normalizeNflTeam } from './nfl';
 import type { LeagueSnapshot, Player, Team } from './types';
+import { withTeamProjection } from './projections';
+import { DomUtils, parseDocument } from 'htmlparser2';
 
-const YAHOO_AUTH_URL = 'https://api.login.yahoo.com/oauth2/request_auth';
-const YAHOO_TOKEN_URL = 'https://api.login.yahoo.com/oauth2/get_token';
-const YAHOO_API_URL = 'https://fantasysports.yahooapis.com/fantasy/v2';
-const CALLBACK_PATH = '/api/yahoo/callback';
+const YAHOO_API_URL = 'https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2';
 const REQUEST_TIMEOUT_MS = 10_000;
 
-export type YahooTokens = {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: string;
-};
+export type YahooCredentials = { Y: string; T: string };
 
 type JsonObject = Record<string, unknown>;
 
@@ -34,8 +30,8 @@ function mediaUrl(value: unknown): string | undefined {
     return undefined;
   }
   if (!isObject(value)) return undefined;
-  for (const key of ['href', 'url', 'image_url', 'imageUrl']) {
-    const result = mediaUrl(value[key]);
+  for (const item of Object.values(value)) {
+    const result = mediaUrl(item);
     if (result) return result;
   }
   return undefined;
@@ -91,10 +87,7 @@ function pathField(value: unknown, path: string): unknown {
 function collectionItems(value: unknown, resourceName: string): unknown[] {
   if (Array.isArray(value)) {
     if (value.length === 0) return [];
-    if (value.some((item) => Array.isArray(item) && item.length > 0)) {
-      return value.flatMap((item) => collectionItems(item, resourceName));
-    }
-
+    if (value.every(Array.isArray)) return value.flatMap((item) => collectionItems(item, resourceName));
     const objects = value.filter(isObject);
     const keyNames = [`${resourceName}_key`, `${resourceName}_id`];
     const separateResources = objects.filter((item) =>
@@ -179,44 +172,6 @@ function numberField(value: unknown, ...paths: string[]): number | null {
   return null;
 }
 
-function env(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new AppError(`Missing ${name}`, 500);
-  return value;
-}
-
-function redirectUri(): string {
-  const appUrl = env('APP_URL');
-  let url: URL;
-  try {
-    url = new URL(appUrl);
-  } catch {
-    throw new AppError('Invalid APP_URL', 500);
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new AppError('Invalid APP_URL', 500);
-  }
-  return `${appUrl.replace(/\/$/, '')}${CALLBACK_PATH}`;
-}
-
-export function yahooAuthorizeUrl(state: string): string {
-  if (!state?.trim()) throw new AppError('Missing OAuth state', 400);
-  const params = new URLSearchParams({
-    client_id: env('YAHOO_CLIENT_ID'),
-    redirect_uri: redirectUri(),
-    response_type: 'code',
-    scope: 'fspt-r',
-    state,
-  });
-  return `${YAHOO_AUTH_URL}?${params.toString()}`;
-}
-
-function basicAuth(clientId: string, clientSecret: string): string {
-  const value = `${clientId}:${clientSecret}`;
-  if (typeof btoa === 'function') return btoa(value);
-  return Buffer.from(value, 'utf8').toString('base64');
-}
-
 function retryAfter(response: Response): number | undefined {
   const raw = response.headers?.get?.('retry-after');
   if (!raw) return undefined;
@@ -229,7 +184,6 @@ function retryAfter(response: Response): number | undefined {
 async function jsonRequest(
   url: string,
   init: RequestInit,
-  kind: 'api' | 'token' = 'api',
 ): Promise<unknown> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -244,39 +198,15 @@ async function jsonRequest(
       fetch(url, { ...init, signal: controller.signal }),
       timeout,
     ]);
-    if (response.status === 401) {
-      throw new AppError(
-        kind === 'token' ? 'Yahoo authorization failed' : 'Yahoo authorization expired',
-        401,
-      );
-    }
+    if (response.status === 401) throw new AppError('Yahoo authorization expired', 401);
     if (response.status === 429) {
       throw new AppError('Yahoo rate limit exceeded', 429, retryAfter(response));
     }
-    if (kind === 'token' && response.status === 400) {
-      try {
-        const body = await Promise.race([response.json(), timeout]);
-        if (isObject(body) && body.error === 'invalid_grant') {
-          throw new AppError('Yahoo authorization failed', 401);
-        }
-      } catch (error) {
-        if (error instanceof AppError) throw error;
-      }
-      throw new AppError('Yahoo token request failed', 502);
-    }
-    if (response.ok === false || response.status >= 400) {
-      throw new AppError(
-        kind === 'token' ? 'Yahoo token request failed' : 'Yahoo upstream request failed',
-        502,
-      );
-    }
+    if (response.ok === false || response.status >= 400) throw new AppError('Yahoo upstream request failed', 502);
     try {
       return await Promise.race([response.json(), timeout]);
     } catch {
-      throw new AppError(
-        kind === 'token' ? 'Invalid Yahoo token response' : 'Invalid Yahoo response',
-        502,
-      );
+      throw new AppError('Invalid Yahoo response', 502);
     }
   } catch (error) {
     if (controller.signal.aborted) {
@@ -288,68 +218,18 @@ async function jsonRequest(
   }
 }
 
-async function tokenRequest(body: URLSearchParams): Promise<YahooTokens> {
-  const clientId = env('YAHOO_CLIENT_ID');
-  const clientSecret = env('YAHOO_CLIENT_SECRET');
-  const data = await jsonRequest(YAHOO_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      accept: 'application/json',
-      authorization: `Basic ${basicAuth(clientId, clientSecret)}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body,
-    redirect: 'manual',
-  }, 'token');
-
-  const accessToken = textField(data, 'access_token');
-  const expiresIn = numberField(data, 'expires_in');
-  if (!accessToken || expiresIn === null || expiresIn <= 0) {
-    throw new AppError('Invalid Yahoo token response', 502);
-  }
-
-  return {
-    accessToken,
-    refreshToken: textField(data, 'refresh_token') ?? '',
-    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
-  };
-}
-
-export async function exchangeYahooCode(code: string): Promise<YahooTokens> {
-  if (!code?.trim()) throw new AppError('Missing OAuth code', 400);
-  const tokens = await tokenRequest(
-    new URLSearchParams({
-      code,
-      grant_type: 'authorization_code',
-      redirect_uri: redirectUri(),
-    }),
-  );
-  if (!tokens.refreshToken) throw new AppError('Invalid Yahoo token response', 502);
-  return tokens;
-}
-
-export async function refreshYahooTokens(refreshToken: string): Promise<YahooTokens> {
-  if (!refreshToken?.trim()) throw new AppError('Missing Yahoo refresh token', 400);
-  const tokens = await tokenRequest(
-    new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      redirect_uri: redirectUri(),
-    }),
-  );
-  return { ...tokens, refreshToken: tokens.refreshToken || refreshToken };
-}
-
 function apiUrl(path: string): string {
   return `${YAHOO_API_URL}${path}${path.includes('?') ? '&' : '?'}format=json`;
 }
 
-function bearer(accessToken: string): RequestInit {
-  if (!accessToken?.trim()) throw new AppError('Missing Yahoo access token', 401);
+function browserCookies(credentials: YahooCredentials): RequestInit {
+  for (const value of [credentials?.Y, credentials?.T]) {
+    if (typeof value !== 'string' || !value || /[\u0000-\u001f\u007f;]/.test(value)) throw new AppError('Invalid Yahoo session.', 401);
+  }
   return {
     headers: {
       accept: 'application/json',
-      authorization: `Bearer ${accessToken}`,
+      cookie: `Y=${credentials.Y}; T=${credentials.T}`,
     },
     cache: 'no-store',
     redirect: 'manual',
@@ -426,8 +306,9 @@ function parsePlayer(record: JsonObject, labels: Map<string, string>): Player | 
   const last = textField(record, 'name.last');
   const name = textField(record, 'name.full', 'name') ?? ([first, last].filter(Boolean).join(' ') || id);
   const headshot = mediaField(record, 'image_url', 'headshot', 'player_image_url', 'image');
-  const nflTeam = textField(record, 'editorial_team_abbr', 'editorial_team_full_name', 'team_abbr', 'team_name');
-  const nflTeamLogo = mediaField(record, 'editorial_team_logo', 'team_logo', 'editorial_team_logos');
+  const rawNflTeam = textField(record, 'editorial_team_abbr', 'editorial_team_full_name', 'team_abbr', 'team_name');
+  const nflTeam = rawNflTeam ? normalizeNflTeam(rawNflTeam) ?? rawNflTeam : null;
+  const nflTeamLogo = nflTeamLogoUrl(nflTeam ?? undefined) ?? mediaField(record, 'editorial_team_logo', 'team_logo', 'editorial_team_logos');
   const stats: Record<string, string | number> = {};
   for (const stat of findResources(record, 'stat')) {
     const statId = textField(stat, 'stat_id', 'id');
@@ -444,12 +325,14 @@ function parsePlayer(record: JsonObject, labels: Map<string, string>): Player | 
       }
     }
   }
+  const projection = numberField(record, 'player_projected_points.total', 'projected_points.total', 'projected_points');
   return {
     id,
     name,
     position: display ?? eligible ?? selected ?? '',
     slot: selected ?? '',
     points: numberField(record, 'player_points.total', 'points', 'total_points'),
+    ...(projection !== null ? { projection } : {}),
     stats,
     ...(headshot ? { headshot } : {}),
     ...(nflTeam ? { nflTeam } : {}),
@@ -463,12 +346,14 @@ function parseTeam(record: JsonObject, labels: Map<string, string>): Team | null
   const players = findResources(record, 'player')
     .map((player) => parsePlayer(player, labels))
     .filter((player): player is Player => player !== null);
+  const projection = numberField(record, 'team_projected_points.total', 'projected_points.total', 'projected_points');
   return {
     id,
     name: textField(record, 'name') ?? id,
     logo: mediaField(record, 'logo', 'logo_url', 'team_logo', 'team_logos.0.team_logo.0.url', 'team_logos.0.team_logo.url', 'team_logos.team_logo.url'),
     ...(findResources(record, 'manager').some((manager) => ['1', 'true'].includes(String(firstField(manager, 'is_current_login', 'is_current_user')).toLowerCase())) ? { isUserTeam: true } : {}),
     points: numberField(record, 'team_points.total', 'points', 'total_points', 'team_score'),
+    ...(projection !== null ? { projection } : {}),
     players,
   };
 }
@@ -489,6 +374,7 @@ function mergeTeams(records: JsonObject[], labels = new Map<string, string>()): 
       logo: team.logo ?? existing.logo,
       isUserTeam: team.isUserTeam || existing.isUserTeam,
       points: team.points ?? existing.points,
+      projection: team.projection ?? existing.projection,
       players: team.players.length ? team.players : existing.players,
     });
   }
@@ -508,15 +394,61 @@ function mergeTeamValues(values: Team[]): Team[] {
       name: team.name || existing.name,
       logo: team.logo ?? existing.logo,
       isUserTeam: team.isUserTeam || existing.isUserTeam,
-      points: team.points ?? existing.points,
+      points: existing.points,
+      projection: existing.projection ?? team.projection,
       players: team.players.length ? team.players : existing.players,
     });
   }
-  return [...teams.values()];
+  return [...teams.values()].map(withTeamProjection);
 }
 
-function parseMatchups(payload: unknown, labels = new Map<string, string>()): { matchups: { home: string; away: string | null }[]; week: number | null; teams: Team[] } {
-  const matchups: { home: string; away: string | null }[] = [];
+export function parseYahooRosterProjections(html: string): Map<string, number> {
+  const projections = new Map<string, number>();
+  const document = parseDocument(html);
+  const tables = DomUtils.findAll((node) => node.name === 'table', document.children);
+  for (const table of tables) {
+    const headers = DomUtils.findAll((node) => node.name === 'tr' &&
+      node.children.some((child) => child.type === 'tag' && child.name === 'th' && DomUtils.textContent(child).trim() === 'Proj Pts'), table.children);
+    if (!headers.length) continue;
+    const headerCells = headers[0].children.filter((child) => child.type === 'tag' && child.name === 'th');
+    const column = headerCells.findIndex((child) => DomUtils.textContent(child).trim() === 'Proj Pts');
+    if (column < 0) continue;
+    for (const row of DomUtils.findAll((node) => node.name === 'tr', table.children)) {
+      const cells = row.children.filter((child) => child.type === 'tag' && child.name === 'td');
+      const projectionCell = cells[column + Math.max(0, cells.length - headerCells.length)];
+      const player = projectionCell ? DomUtils.findOne((node) => !!node.attribs?.['data-ys-playerid'], cells) : null;
+      const id = player?.attribs['data-ys-playerid'];
+      const value = projectionCell && DomUtils.textContent(projectionCell).trim();
+      if (!id || !/^\d{1,12}$/.test(id) || !value || !/^\d+(?:\.\d+)?$/.test(value)) continue;
+      const projection = Number(value);
+      if (Number.isFinite(projection) && projection <= 500) projections.set(id, projection);
+    }
+  }
+  return projections;
+}
+
+async function yahooRosterPage(credentials: YahooCredentials, leagueId: string, teamId: string, season: number, week: number): Promise<Map<string, number>> {
+  const teamNumber = teamId.match(new RegExp(`^${leagueId.replaceAll('.', '\\.')}\\.t\\.(\\d{1,12})$`))?.[1];
+  if (!teamNumber) return new Map();
+  const leagueNumber = leagueId.split('.').at(-1);
+  const prefix = season === new Date().getFullYear() ? '' : `${season}/`;
+  const url = `https://football.fantasysports.yahoo.com/${prefix}f1/${leagueNumber}/${teamNumber}?stat1=GDD&stat2=M&week=${week}`;
+  const init = browserCookies(credentials);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, headers: { ...init.headers, accept: 'text/html' }, signal: controller.signal });
+    if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) return new Map();
+    return parseYahooRosterProjections(await response.text());
+  } catch {
+    return new Map();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseMatchups(payload: unknown, labels = new Map<string, string>()): { matchups: LeagueSnapshot['matchups']; week: number | null; teams: Team[] } {
+  const matchups: LeagueSnapshot['matchups'] = [];
   const scoreboardMatchups = findResources(payload, 'matchup');
   const league = findResources(payload, 'league')[0];
   const scoreboard = findResources(payload, 'scoreboard')[0];
@@ -529,7 +461,10 @@ function parseMatchups(payload: unknown, labels = new Map<string, string>()): { 
       if (id && !unique.has(id)) unique.set(id, team);
     }
     const ids = [...unique.keys()];
-    if (ids.length) matchups.push({ home: ids[0], away: ids[1] ?? null });
+    const chance = numberField(matchup, 'home_win_probability', 'win_probability.home') ??
+      numberField(unique.get(ids[0]), 'win_probability');
+    if (ids.length) matchups.push({ home: ids[0], away: ids[1] ?? null,
+      ...(chance !== null && chance >= 0 && chance <= 100 ? { homeWinProbability: chance <= 1 ? chance * 100 : chance } : {}) });
     scoreboardTeams.push(...unique.values());
   }
   return {
@@ -552,7 +487,7 @@ export function parseYahooLeagueSnapshot(
   const labels = statLabels(payload);
   const scoreboard = parseMatchups(scoreboardPayload ?? payload, labels);
   const teams = mergeTeams(findResources(payload, 'team'), labels);
-  const mergedTeams = mergeTeamValues([...teams, ...scoreboard.teams]);
+  const mergedTeams = mergeTeamValues([...scoreboard.teams, ...teams]);
   const week =
     asInteger(firstField(league, 'current_week', 'week')) ??
     scoreboard.week ??
@@ -561,10 +496,11 @@ export function parseYahooLeagueSnapshot(
     id: textField(league, 'league_key') ?? leagueId,
     provider: 'yahoo',
     name: textField(league, 'name') ?? leagueId,
+    logo: mediaField(league, 'logo', 'logo_url', 'league_logo', 'league_logo_url'),
     season: asInteger(firstField(league, 'season')) ?? season,
     week,
     fetchedAt: new Date().toISOString(),
-    teams: mergedTeams,
+    teams: mergedTeams.map(withTeamProjection),
     matchups: scoreboard.matchups,
   };
 }
@@ -573,25 +509,26 @@ export const parseYahooLeague = parseYahooLeagueSnapshot;
 export const parseLeagueSnapshot = parseYahooLeagueSnapshot;
 
 export async function discoverYahooLeagues(
-  accessToken: string,
+  credentials: YahooCredentials,
 ): Promise<{ id: string; name: string; season: number }[]> {
   const payload = await jsonRequest(
     apiUrl('/users;use_login=1/games;game_codes=nfl/leagues'),
-    bearer(accessToken),
+    browserCookies(credentials),
   );
   return parseYahooLeagues(payload);
 }
 
 export async function fetchYahooLeague(
-  accessToken: string,
+  credentials: YahooCredentials,
   leagueId: string,
   season: number,
+  previous?: LeagueSnapshot,
 ): Promise<LeagueSnapshot> {
   const key = leagueKey(leagueId);
   if (!Number.isInteger(season) || season < 2000 || season > 2100) {
     throw new AppError('Invalid Yahoo season', 400);
   }
-  const metadata = await jsonRequest(apiUrl(`/league/${key}/settings`), bearer(accessToken));
+  const metadata = await jsonRequest(apiUrl(`/league/${key}/settings`), browserCookies(credentials));
   const metadataLeague = findResources(metadata, 'league')[0];
   const metadataSnapshot = parseYahooLeagueSnapshot(metadata, key, season);
   if (
@@ -607,14 +544,36 @@ export async function fetchYahooLeague(
   const [roster, scoreboard] = await Promise.all([
     jsonRequest(
       apiUrl(`/league/${key}/teams/roster;week=${week}/players/stats;type=week;week=${week}`),
-      bearer(accessToken),
+      browserCookies(credentials),
     ),
     jsonRequest(
       apiUrl(`/league/${key}/scoreboard;week=${week}`),
-      bearer(accessToken),
+      browserCookies(credentials),
     ),
   ]);
   const snapshot = parseYahooLeagueSnapshot({ metadata, roster }, key, season, scoreboard);
   if (!snapshot.teams.length) throw new AppError('Invalid Yahoo league response', 502);
+  const projectionsAt = previous?.yahooProjectionsAt ?? previous?.fetchedAt;
+  if (previous?.week === week && previous.season === season && previous.id === key &&
+    previous.teams.some((team) => team.players.some((player) => player.projection !== undefined)) &&
+    projectionsAt && Date.now() - Date.parse(projectionsAt) < 300_000) {
+    const saved = new Map(previous.teams.flatMap((team) => team.players.map((player) => [player.id, player.projection] as const)));
+    snapshot.teams = snapshot.teams.map((team) => ({ ...team, players: team.players.map((player) => ({
+      ...player,
+      ...(player.projection === undefined && saved.get(player.id) !== undefined ? { projection: saved.get(player.id) } : {}),
+    })) }));
+    snapshot.yahooProjectionsAt = projectionsAt;
+    return snapshot;
+  }
+  for (let start = 0; start < snapshot.teams.length; start += 4) {
+    await Promise.all(snapshot.teams.slice(start, start + 4).map(async (team) => {
+      const projections = await yahooRosterPage(credentials, key, team.id, season, week);
+      team.players = team.players.map((player) => {
+        const projection = projections.get(player.id.split('.').at(-1)!);
+        return projection === undefined ? player : { ...player, projection };
+      });
+    }));
+  }
+  snapshot.yahooProjectionsAt = new Date().toISOString();
   return snapshot;
 }

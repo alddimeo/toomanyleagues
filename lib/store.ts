@@ -7,10 +7,9 @@ import type { LeagueSnapshot, Provider } from './types';
 export type State = {
   connections?: Partial<Record<Provider,{secret:string;status:string}>>;
   leagues?: LeagueSnapshot[];
-  browser?: {secret:string;expiresAt:string};
-  yahooState?: {nonce:string;expiresAt:string};
   nextRefreshAt?: number;
-  nextDiscoveryAt?: number;
+  nextEspnDiscoveryAt?: number;
+  nextYahooDiscoveryAt?: number;
   espnDiscovery?: {leagues:{id:string;name:string;season:number}[];expiresAt:string};
 };
 function db() {

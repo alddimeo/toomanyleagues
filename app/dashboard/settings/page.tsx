@@ -1,0 +1,7 @@
+import { cookies } from "next/headers";
+import { DashboardShell } from "@/components/DashboardShell";
+
+export default async function SettingsPage() {
+  await cookies();
+  return <DashboardShell focus="settings" />;
+}

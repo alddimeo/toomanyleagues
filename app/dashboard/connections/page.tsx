@@ -1,7 +1,5 @@
-import { cookies } from "next/headers";
-import { DashboardShell } from "@/components/DashboardShell";
+import { redirect } from "next/navigation";
 
-export default async function ConnectionsPage() {
-  await cookies();
-  return <DashboardShell focus="connections" />;
+export default function ConnectionsPage() {
+  redirect("/dashboard/settings");
 }

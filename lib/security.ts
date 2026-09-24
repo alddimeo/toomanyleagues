@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 export class AppError extends Error {
   constructor(message: string, public status = 400, public retryAfter?: number) { super(message); }
@@ -46,17 +46,12 @@ export function unseal<T>(value: string, owner: string): T {
   decipher.setAAD(Buffer.from(owner)); decipher.setAuthTag(packed.subarray(12, 28));
   return JSON.parse(Buffer.concat([decipher.update(packed.subarray(28)), decipher.final()]).toString('utf8')) as T;
 }
-export function sameSecret(a: string, b: string) {
-  const left = Buffer.from(a), right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-export function verifyOAuthState(received:string,browserNonce:string,pending?:{nonce:string;expiresAt:string}) {
-  if(!pending || !Number.isFinite(Date.parse(pending.expiresAt)) || Date.parse(pending.expiresAt)<Date.now() || !received || !sameSecret(received,pending.nonce) || !sameSecret(received,browserNonce)) {
-    throw new AppError('Yahoo authorization expired. Connect again.',403);
-  }
-}
 export function provider(value: unknown): 'espn' | 'yahoo' {
   if (value !== 'espn' && value !== 'yahoo') throw new AppError('Choose ESPN or Yahoo.');
+  return value;
+}
+export function sessionCookie(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !value || value.length > 4096 || /[\u0000-\u001f\u007f;]/.test(value)) throw new AppError(`Invalid ${name} session. Sign in and try again.`);
   return value;
 }
 export function leagueInput(value: Record<string, unknown>) {

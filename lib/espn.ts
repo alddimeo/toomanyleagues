@@ -1,8 +1,13 @@
-import { AppError } from './security';
+import { AppError, appUrl } from './security';
 import type { LeagueSnapshot, Player, Team } from './types';
+import { withTeamProjection } from './projections';
 
 const ESPN_API = 'https://lm-api-reads.fantasy.espn.com';
 const ESPN_FAN_API = 'https://fan.api.espn.com';
+const ESPN_IMAGE_API = 'https://mystique-api.fantasy.espn.com';
+const ESPN_IMAGE_PATH = /^\/apis\/v1\/domains\/lm\/images\/([\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})$/i;
+const ESPN_PROXY_PATH = /^\/api\/espn\/team-logo\/([\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})$/i;
+const MAX_TEAM_LOGO_BYTES = 2 * 1024 * 1024;
 const ESPN_METADATA_VIEWS = ['mSettings', 'mTeam', 'mRoster', 'mStatus'];
 const ESPN_SCOREBOARD_VIEWS = ['mMatchupScore', 'mScoreboard'];
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -77,7 +82,11 @@ function text(value: unknown): string | null {
 }
 
 function mediaUrl(value: unknown): string | undefined {
-  if (typeof value === 'string' && /^https?:\/\//i.test(value.trim()) && value.length <= 2048) return value.trim();
+  if (typeof value === 'string' && value.length <= 2048) {
+    const url = value.trim();
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith('//')) return `https:${url}`;
+  }
   if (Array.isArray(value)) {
     for (const item of value) {
       const result = mediaUrl(item);
@@ -87,11 +96,108 @@ function mediaUrl(value: unknown): string | undefined {
   }
   const record = object(value);
   if (!record) return undefined;
-  for (const key of ['href', 'url', 'imageUrl', 'image_url']) {
-    const result = mediaUrl(record[key]);
+  for (const item of Object.values(record)) {
+    const result = mediaUrl(item);
     if (result) return result;
   }
   return undefined;
+}
+
+export function espnTeamLogoId(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 2048) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    const match = url.origin === ESPN_IMAGE_API
+      ? ESPN_IMAGE_PATH.exec(url.pathname)
+      : url.origin === appUrl() ? ESPN_PROXY_PATH.exec(url.pathname) : null;
+    return match?.[1];
+  } catch {
+    try {
+      const url = new URL(value, appUrl());
+      return url.origin === appUrl() && !url.search && !url.hash && !url.username && !url.password
+        ? ESPN_PROXY_PATH.exec(url.pathname)?.[1]
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+export function espnTeamLogoProxyPath(value: unknown): string | undefined {
+  const logoId = espnTeamLogoId(value);
+  return logoId ? `/api/espn/team-logo/${logoId}` : undefined;
+}
+
+function validImage(type: string, bytes: Uint8Array): boolean {
+  if (type === 'image/jpeg' || type === 'image/jpg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (type === 'image/png') return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value);
+  if (type === 'image/gif') return ['GIF87a', 'GIF89a'].includes(String.fromCharCode(...bytes.subarray(0, 6)));
+  return type === 'image/webp' && String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.subarray(8, 12)) === 'WEBP';
+}
+
+async function readTeamLogo(response: Response): Promise<Uint8Array> {
+  const length = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(length) && length > MAX_TEAM_LOGO_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new AppError('ESPN returned an invalid team logo.', 502);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new AppError('ESPN returned an invalid team logo.', 502);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_TEAM_LOGO_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new AppError('ESPN returned an invalid team logo.', 502);
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+export async function fetchEspnTeamLogo(
+  credentials: { espn_s2: string; SWID: string },
+  logoId: string,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  if (!ESPN_IMAGE_PATH.test(`/apis/v1/domains/lm/images/${logoId}`)) throw new AppError('ESPN team logo was not found.', 404);
+  const espnS2 = cookieValue('espn_s2', credentials?.espn_s2);
+  const swid = cookieValue('SWID', credentials?.SWID);
+  let response: Response;
+  try {
+    response = await fetch(new URL(`/apis/v1/domains/lm/images/${logoId}`, ESPN_IMAGE_API), {
+      headers: { Accept: 'image/*', Cookie: `espn_s2=${espnS2}; SWID=${swid}` },
+      cache: 'no-store',
+      redirect: 'manual',
+      signal: timeoutSignal(),
+    });
+  } catch {
+    throw new AppError('ESPN team logo is unavailable right now.', 502);
+  }
+  if (response.status === 401) throw new AppError('ESPN authentication expired. Reconnect your ESPN account.', 401);
+  if (!response.ok) throw new AppError('ESPN team logo is unavailable right now.', 502);
+  const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase();
+  if (!contentType || !['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'].includes(contentType)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new AppError('ESPN returned an invalid team logo.', 502);
+  }
+  const bytes = await readTeamLogo(response);
+  if (!validImage(contentType, bytes)) throw new AppError('ESPN returned an invalid team logo.', 502);
+  return { bytes, contentType: contentType === 'image/jpg' ? 'image/jpeg' : contentType };
 }
 
 function firstMediaUrl(...values: unknown[]): string | undefined {
@@ -239,6 +345,20 @@ function playerPoints(entry: JsonObject, season: number, scoring: number, scoped
   return null;
 }
 
+function playerProjection(entry: JsonObject, season: number, scoring: number): number | undefined {
+  const pool = object(entry.playerPoolEntry);
+  const player = playerObject(entry);
+  const direct = firstNumber(pool?.projectedPoints, entry.projectedPoints, player.projectedPoints);
+  if (direct !== null) return direct;
+  for (const source of [pool?.stats, player.stats, entry.stats]) {
+    const projected = array(source).find((stat) => integer(stat.statSourceId) === 1 &&
+      integer(stat.seasonId) === season && integer(stat.scoringPeriodId) === scoring);
+    const points = firstNumber(projected?.appliedStatTotal, projected?.appliedTotal);
+    if (points !== null) return points;
+  }
+  return undefined;
+}
+
 function player(entry: JsonObject, season: number, scoring: number, scoped: boolean): Player | null {
   const playerData = playerObject(entry);
   const playerId = id(entry.playerId) || id(playerData.id) || id(object(entry.playerPoolEntry)?.id);
@@ -271,6 +391,7 @@ function player(entry: JsonObject, season: number, scoring: number, scoped: bool
     position: positionId === null ? '' : POSITION_NAMES[positionId] || String(positionId),
     slot: slotId === null ? '' : SLOT_NAMES[slotId] || String(slotId),
     points: playerPoints(entry, season, scoring, scoped),
+    projection: playerProjection(entry, season, scoring),
     stats: playerStats(entry, season, scoring, scoped),
     ...(headshot ? { headshot } : {}),
     ...(nflTeam ? { nflTeam } : {}),
@@ -308,6 +429,10 @@ function mergeEntry(base: JsonObject, current: JsonObject): JsonObject {
   const merged: JsonObject = { ...base, ...current, playerPoolEntry: mergedPool };
   if (!Object.prototype.hasOwnProperty.call(current, 'appliedStatTotal')) delete merged.appliedStatTotal;
   if (!Object.prototype.hasOwnProperty.call(current, 'stats')) delete merged.stats;
+  for (const [target, previous, live] of [[mergedPool, basePool, currentPool], [mergedPlayer, basePlayer, currentPlayer], [merged, base, current]] as const) {
+    const projections = array(previous?.stats).filter((stat) => integer(stat.statSourceId) === 1);
+    if (projections.length) target.stats = [...array(live?.stats), ...projections];
+  }
   return merged;
 }
 
@@ -352,25 +477,27 @@ function teamSnapshot(team: JsonObject, side: JsonObject | undefined, season: nu
     const playerId = entryPlayerId(entry);
     return !!playerId && !known.has(playerId);
   }));
-  return {
+  return withTeamProjection({
     id: teamId,
     name: teamName(team),
     logo: firstMediaUrl(team.logo, team.logoUrl, team.teamLogo, team.logos),
     ...(ownedBy(team, ownerId) ? { isUserTeam: true } : {}),
     points: teamPoints(side),
+    projection: firstNumber(side?.totalProjectedPoints, side?.projectedPoints, object(side?.rosterForCurrentScoringPeriod)?.projectedPoints) ?? undefined,
     players: entries.map((entry) => player(entry, season, scoring, liveById.has(entryPlayerId(entry) || '')))
       .filter((value): value is Player => !!value),
-  };
+  });
 }
 
-function matchupSnapshot(data: JsonObject, week: number): { home: string; away: string | null }[] {
+function matchupSnapshot(data: JsonObject, week: number): LeagueSnapshot['matchups'] {
   if (!week) return [];
-  const result: { home: string; away: string | null }[] = [];
+  const result: LeagueSnapshot['matchups'] = [];
   for (const matchup of array(data.schedule)) {
     if (integer(matchup.matchupPeriodId) !== week) continue;
     const home = id(object(matchup.home)?.teamId);
     if (!home) continue;
-    result.push({ home, away: id(object(matchup.away)?.teamId) });
+    const probability = firstNumber(object(matchup.home)?.winProbability, object(matchup.home)?.winningPercentage);
+    result.push({ home, away: id(object(matchup.away)?.teamId), ...(probability !== null && probability >= 0 && probability <= 1 ? { homeWinProbability: probability * 100 } : {}) });
   }
   return result;
 }
@@ -392,6 +519,7 @@ export function parseEspnLeague(value: unknown, leagueId: string, season: number
     id: id(data.id) || leagueId,
     provider: 'espn',
     name: text(settings?.name) || text(data.name) || '',
+    logo: firstMediaUrl(data.logo, data.logoUrl, data.leagueLogo, settings?.logo, settings?.logoUrl, settings?.leagueLogo),
     season,
     week,
     fetchedAt: new Date().toISOString(),

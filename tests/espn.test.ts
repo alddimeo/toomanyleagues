@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '../lib/security';
-import { ESPN_API_BASE, ESPN_FAN_API_BASE, discoverEspnLeagues, fetchEspnLeague, parseEspnLeague, parseEspnProfile } from '../lib/espn';
+import { ESPN_API_BASE, ESPN_FAN_API_BASE, discoverEspnLeagues, espnTeamLogoId, espnTeamLogoProxyPath, fetchEspnLeague, fetchEspnTeamLogo, parseEspnLeague, parseEspnProfile } from '../lib/espn';
 
 const season = 2025;
 
@@ -75,6 +75,123 @@ test('parser maps current matchup, league points, roster points, and weekly stat
   assert.equal(snapshot.teams[0].players[0].slot, 'QB');
   assert.deepEqual(snapshot.teams[0].players[0].stats, { 'Passing yards': 300, 'Passing touchdowns': 2 });
   assert.equal(snapshot.teams[1].points, null);
+});
+
+test('parser reads current ESPN projected points and matchup win chance', () => {
+  const value = responseFixture();
+  value.teams[0].roster.entries[0].playerPoolEntry.player.stats = [
+    { seasonId: season, scoringPeriodId: 5, statSourceId: 1, appliedStatTotal: 29.5 },
+    { seasonId: season, scoringPeriodId: 4, statSourceId: 1, appliedStatTotal: 99 },
+  ];
+  value.schedule[1].home.winProbability = 0.64;
+  const snapshot = parseEspnLeague(value, '123', season);
+  assert.equal(snapshot.teams[0].players[0].projection, 29.5);
+  assert.equal(snapshot.teams[0].projection, 29.5);
+  assert.equal(snapshot.matchups[0].homeWinProbability, 64);
+});
+
+test('parser maps league and nested ESPN team logos', () => {
+  const value = responseFixture();
+  value.settings.logoUrl = 'https://cdn.example/league.png';
+  value.teams[0].logo = undefined;
+  value.teams[0].logos = [{ custom: { src: 'https://cdn.example/nested-team.png' } }];
+  const snapshot = parseEspnLeague(value, '123', season);
+  assert.equal(snapshot.logo, 'https://cdn.example/league.png');
+  assert.equal(snapshot.teams[0].logo, 'https://cdn.example/nested-team.png');
+});
+
+test('parser normalizes protocol-relative ESPN Fantasy team logos', () => {
+  const value = responseFixture();
+  value.teams[0].logo = '//g.espncdn.com/lm-static/ffl/images/default_logos/1.svg';
+  value.teams[1].logos = [{ href: '//g.espncdn.com/lm-static/ffl/images/default_logos/2.svg' }];
+  const snapshot = parseEspnLeague(value, '123', season);
+  assert.equal(snapshot.teams[0].logo, 'https://g.espncdn.com/lm-static/ffl/images/default_logos/1.svg');
+  assert.equal(snapshot.teams[1].logo, 'https://g.espncdn.com/lm-static/ffl/images/default_logos/2.svg');
+});
+
+test('ESPN logo proxy mapping produces a same-origin relative route', () => {
+  const id = 'a1234567-b123-c123-d123-e123456789ab';
+  const source = `https://mystique-api.fantasy.espn.com/apis/v1/domains/lm/images/${id}`;
+  const previousAppUrl = process.env.APP_URL;
+  process.env.APP_URL = 'https://app.example';
+  try {
+    assert.equal(espnTeamLogoId(source), id);
+    assert.equal(espnTeamLogoId(`/api/espn/team-logo/${id}`), id);
+    assert.equal(espnTeamLogoId(`https://app.example/api/espn/team-logo/${id}`), id);
+    assert.equal(espnTeamLogoProxyPath(source), `/api/espn/team-logo/${id}`);
+    const saved = responseFixture();
+    saved.teams[0].logo = source;
+    const snapshot = parseEspnLeague(saved, '123', season);
+    assert.equal(espnTeamLogoProxyPath(snapshot.teams[0].logo), `/api/espn/team-logo/${id}`);
+    assert.equal(snapshot.teams[0].logo, source);
+    assert.equal(espnTeamLogoId(source.replace('https://', 'http://')), undefined);
+    assert.equal(espnTeamLogoId(source.replace('mystique-api.fantasy.espn.com', 'images.example.com')), undefined);
+    assert.equal(espnTeamLogoId(`${source}?next=https://other.example`), undefined);
+    assert.equal(espnTeamLogoId(`https://other.example/api/espn/team-logo/${id}`), undefined);
+  } finally {
+    if (previousAppUrl === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = previousAppUrl;
+  }
+});
+
+test('ESPN logo fetch is fixed-host, authenticated, and validates image responses', async () => {
+  const originalFetch = globalThis.fetch;
+  const id = 'a1234567-b123-c123-d123-e123456789ab';
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0x00]);
+  let url = '';
+  let init: RequestInit | undefined;
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, requestInit?: RequestInit) => {
+    calls += 1;
+    url = String(input);
+    init = requestInit;
+    return new Response(jpeg, { headers: { 'Content-Type': 'image/jpg' } });
+  }) as typeof fetch;
+  try {
+    const image = await fetchEspnTeamLogo({ espn_s2: 's2-token', SWID: '{user-id}' }, id);
+    assert.deepEqual([...image.bytes], [...jpeg]);
+    assert.equal(image.contentType, 'image/jpeg');
+    assert.equal(new URL(url).origin, 'https://mystique-api.fantasy.espn.com');
+    assert.equal(new URL(url).pathname, `/apis/v1/domains/lm/images/${id}`);
+    assert.equal((init?.headers as Record<string, string>).Cookie, 'espn_s2=s2-token; SWID={user-id}');
+    assert.equal(init?.redirect, 'manual');
+    assert.equal(init?.cache, 'no-store');
+
+    globalThis.fetch = (async () => new Response('not an image', { headers: { 'Content-Type': 'image/jpeg' } })) as typeof fetch;
+    await assert.rejects(fetchEspnTeamLogo({ espn_s2: 's2-token', SWID: '{user-id}' }, id),
+      (error: unknown) => error instanceof AppError && error.status === 502);
+
+    globalThis.fetch = (async () => new Response(jpeg, {
+      headers: { 'Content-Type': 'image/jpeg', 'Content-Length': String(2 * 1024 * 1024 + 1) },
+    })) as typeof fetch;
+    await assert.rejects(fetchEspnTeamLogo({ espn_s2: 's2-token', SWID: '{user-id}' }, id),
+      (error: unknown) => error instanceof AppError && error.status === 502);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls, 1);
+});
+
+test('parser keeps opponent live points and weekly player stats', () => {
+  const value = responseFixture();
+  value.schedule[1].away.totalPointsLive = 77.25;
+  value.schedule[1].away.rosterForCurrentScoringPeriod.entries = [{
+    playerId: 202,
+    lineupSlotId: 2,
+    playerPoolEntry: {
+      appliedStatTotal: 12.5,
+      player: {
+        id: 202,
+        fullName: 'Running Back Two',
+        defaultPositionId: 2,
+        stats: [{ seasonId: season, scoringPeriodId: 5, statSourceId: 0, stats: { '24': 50 } }],
+      },
+    },
+  }];
+  const opponent = parseEspnLeague(value, '123', season).teams[1];
+  assert.equal(opponent.points, 77.25);
+  assert.equal(opponent.players[0].points, 12.5);
+  assert.deepEqual(opponent.players[0].stats, { 'Rushing yards': 50 });
 });
 
 test('parser prefers ESPN live matchup points when totalPoints is still zero', () => {

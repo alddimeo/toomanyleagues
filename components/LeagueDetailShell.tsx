@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { LeagueSnapshot, Team } from "@/lib/types";
 import { leagueHref, MatchupGrid, TeamLogo, TeamRoster, formatPoints } from "@/components/LeagueViews";
 import { Wordmark } from "@/components/Wordmark";
+import { ProjectionValue } from "@/components/ProjectionValue";
 
 type Props = { provider: string; leagueId: string; teamId?: string; season?: string };
 
@@ -33,12 +34,32 @@ export function LeagueDetailShell({ provider, leagueId, teamId, season }: Props)
     return () => { cancelled = true; };
   }, [router]);
 
+  useEffect(() => {
+    let busy = false;
+    const refresh = async () => {
+      if (busy || document.visibilityState !== 'visible') return;
+      busy = true;
+      try {
+        const response = await fetch('/api/refresh', { method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+        if (response.status === 401) return router.replace('/login');
+        if (!response.ok) return;
+        const value: unknown = await response.json();
+        if (value && typeof value === 'object' && Array.isArray((value as { leagues?: unknown }).leagues))
+          setLeagues((value as { leagues: unknown[] }).leagues.filter(isLeague));
+      } catch { /* Keep the previous snapshot when a live refresh fails. */ }
+      finally { busy = false; }
+    };
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
+  }, [router]);
+
   if (error) return <RouteMessage message={error} />;
   if (!leagues) return <main className="dashboard-loading"><Wordmark compact /><div className="loading-spinner" role="status" aria-label="Loading snapshot" /><p>Opening snapshot…</p></main>;
   const league = leagues.find((item) => item.provider === provider && item.id === leagueId && (!season || String(item.season) === season));
   const team = league && teamId ? league.teams.find((item) => item.id === teamId) : undefined;
   if (!league || (teamId && !team)) return <RouteMessage message="That league or team is not in your saved snapshots." />;
-  return <div className="dashboard-route-shell"><main className="dashboard-main"><header className="dashboard-topbar"><Link href="/" className="dashboard-brand"><Wordmark /></Link><nav className="dashboard-nav" aria-label="Dashboard sections"><Link href="/dashboard" className="dashboard-nav-link active">Game center</Link><Link href="/dashboard/connections" className="dashboard-nav-link">Connections</Link></nav><Link href="/dashboard" className="route-back">← Back</Link></header><div className="dashboard-content"><div className="route-breadcrumb"><Link href="/dashboard">Dashboard</Link><span>/</span><Link href={leagueHref(league)}>{league.name}</Link>{team ? <><span>/</span><span>{team.name}</span></> : null}</div>{team ? <TeamDetail league={league} team={team} /> : <LeagueDetail league={league} />}</div></main></div>;
+  return <div className="dashboard-route-shell"><main className="dashboard-main"><header className="dashboard-topbar"><Link href="/" className="dashboard-brand"><Wordmark /></Link><nav className="dashboard-nav" aria-label="Dashboard sections"><Link href="/dashboard" className="dashboard-nav-link active">Game center</Link><Link href="/dashboard/settings" className="dashboard-nav-link">Settings</Link><Link href="/dashboard/help" className="dashboard-nav-link">Help</Link></nav><Link href="/dashboard" className="route-back">← Back</Link></header><div className="dashboard-content"><div className="route-breadcrumb"><Link href="/dashboard">Dashboard</Link><span>/</span><Link href={leagueHref(league)}>{league.name}</Link>{team ? <><span>/</span><span>{team.name}</span></> : null}</div>{team ? <TeamDetail league={league} team={team} /> : <LeagueDetail league={league} />}</div></main></div>;
 }
 
 function LeagueDetail({ league }: { league: LeagueSnapshot }) {
@@ -46,7 +67,7 @@ function LeagueDetail({ league }: { league: LeagueSnapshot }) {
 }
 
 function TeamDetail({ league, team }: { league: LeagueSnapshot; team: Team }) {
-  return <><div className="route-heading team-detail-heading"><div className="team-detail-title"><TeamLogo team={team} /><div><p className="eyebrow">{league.name} · {league.season} SEASON</p><h1>{team.name}</h1><p>{formatPoints(team.points)} points · {team.players.length} rostered players</p></div></div><Link className="button button-outline button-small" href={leagueHref(league)}>← League matchups</Link></div><TeamRoster team={team} /></>;
+  return <><div className="route-heading team-detail-heading"><div className="team-detail-title"><TeamLogo team={team} /><div><p className="eyebrow">{league.name} · {league.season} SEASON</p><h1>{team.name}</h1><p>{formatPoints(team.points)} points · {team.players.length} rostered players</p><ProjectionValue value={team.projection} baseline={team.pregameProjection} /></div></div><Link className="button button-outline button-small" href={leagueHref(league)}>← League matchups</Link></div><TeamRoster league={league} team={team} /></>;
 }
 
 function RouteMessage({ message }: { message: string }) {
