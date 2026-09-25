@@ -90,6 +90,19 @@ test('parser reads current ESPN projected points and matchup win chance', () => 
   assert.equal(snapshot.matchups[0].homeWinProbability, 64);
 });
 
+test('ESPN uses its weekly player and matchup team projections', () => {
+  const value = responseFixture();
+  value.teams[0].roster.entries[0].playerPoolEntry.projectedPoints = 10.27;
+  value.teams[0].roster.entries[0].playerPoolEntry.player.stats = [
+    { seasonId: season, scoringPeriodId: 5, statSourceId: 1, statTypeId: 1, appliedStatTotal: 200 },
+    { seasonId: season, scoringPeriodId: 5, statSourceId: 1, statTypeId: 0, appliedStatTotal: 7.19 },
+  ];
+  value.schedule[1].home.totalProjectedPoints = 113.6;
+  const snapshot = parseEspnLeague(value, '123', season);
+  assert.equal(snapshot.teams[0].players[0].projection, 7.19);
+  assert.equal(snapshot.teams[0].projection, 113.6);
+});
+
 test('parser maps league and nested ESPN team logos', () => {
   const value = responseFixture();
   value.settings.logoUrl = 'https://cdn.example/league.png';

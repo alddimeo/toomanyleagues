@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { LeagueSnapshot, Provider } from "@/lib/types";
 import { Wordmark } from "@/components/Wordmark";
-import { MatchupGrid } from "@/components/LeagueViews";
-import { NflDrawer } from "@/components/NflDrawer";
+import { formatPoints, leagueHref, LeagueBanner, MatchupGrid, TeamLogo } from "@/components/LeagueViews";
+import { NflPanel } from "@/components/NflPanel";
+import { useLiveNflGames } from "@/components/useLiveNflGames";
 
 type Connection = { provider: Provider; status: string };
 type DashboardData = {
@@ -22,10 +23,6 @@ type LeaguePickerState = { provider: Provider; options: LeagueOption[]; selected
 
 const extensionStoreUrl = process.env.NEXT_PUBLIC_CHROME_EXTENSION_URL;
 const LIVE_INTERVAL_MS = 30_000;
-const PANEL_MIN_WIDTH = 320;
-const PANEL_DEFAULT_WIDTH = 390;
-const panelWidthLimit = () => Math.max(PANEL_MIN_WIDTH, Math.min(900, (typeof window === "undefined" ? 1416 : window.innerWidth) - 656));
-const clampPanelWidth = (width: number) => Math.min(panelWidthLimit(), Math.max(PANEL_MIN_WIDTH, width));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -82,7 +79,7 @@ function providerStatus(data: DashboardData, provider: Provider) {
   return data.configured[provider] ? "Ready to connect" : "Setup needed";
 }
 
-export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "settings" | "help" }) {
+export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "leagues" | "settings" | "help" }) {
   const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const hasData = data !== null;
@@ -90,45 +87,8 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [liveState, setLiveState] = useState("Connecting to live scores");
-  const [compact, setCompact] = useState(false);
-  const [nflOpen, setNflOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH);
-  const dashboardShell = useRef<HTMLDivElement>(null);
-  const draggingWidth = useRef<number | null>(null);
-  const nflButton = useRef<HTMLButtonElement>(null);
-  const compactBeforeNfl = useRef(false);
-  const closeNfl = useCallback(() => { setCompact(compactBeforeNfl.current); setNflOpen(false); requestAnimationFrame(() => nflButton.current?.focus()); }, []);
-  const toggleNfl = () => {
-    if (nflOpen) return closeNfl();
-    compactBeforeNfl.current = compact;
-    setCompact(true);
-    setNflOpen(true);
-  };
-  useEffect(() => {
-    const saved = Number(localStorage.getItem("nfl-panel-width"));
-    setPanelWidth(clampPanelWidth(saved || PANEL_DEFAULT_WIDTH));
-    const fitViewport = () => setPanelWidth((width) => clampPanelWidth(width));
-    window.addEventListener("resize", fitViewport);
-    return () => window.removeEventListener("resize", fitViewport);
-  }, []);
-  const resizePanel = (width: number) => {
-    const next = clampPanelWidth(width);
-    draggingWidth.current = next;
-    dashboardShell.current?.style.setProperty("--nfl-panel-width", `${next}px`);
-  };
-  const finishResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    const width = draggingWidth.current;
-    if (width === null) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    draggingWidth.current = null;
-    setPanelWidth(width);
-    localStorage.setItem("nfl-panel-width", String(width));
-  };
-  const nudgePanel = (width: number) => {
-    const next = clampPanelWidth(width);
-    setPanelWidth(next);
-    localStorage.setItem("nfl-panel-width", String(next));
-  };
+  const scoresPage = focus === "overview" || focus === "leagues";
+  const liveGames = useLiveNflGames(scoresPage && hasData);
   const [connectionBusy, setConnectionBusy] = useState<Provider | null>(null);
   const [extensionReady, setExtensionReady] = useState(false);
   const [extensionPending, setExtensionPending] = useState<Provider | null>(null);
@@ -203,14 +163,14 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
         const message = await safeApiMessage(response, "Your provider authorization expired. Reconnect the provider to continue.");
         pollingPaused.current = true;
         setLiveState("Updates paused");
-        setNotice({ kind: "error", text: `${message} Reconnect from Settings to resume live updates.` });
+        setNotice({ kind: "error", text: `${message} Reconnect from Settings to refresh scores.` });
         void loadDashboard(true);
         return 0;
       }
       if (!response.ok) {
         const message = await safeApiMessage(response, "We couldn’t update live scores.");
         setLiveState("Live updates delayed");
-        setNotice({ kind: "error", text: `${message} Retrying automatically.` });
+        setNotice({ kind: "error", text: liveGames ? `${message} Retrying automatically.` : message });
         return LIVE_INTERVAL_MS;
       }
       if (!setDashboard(await response.json())) throw new Error("refresh");
@@ -221,15 +181,15 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
       return LIVE_INTERVAL_MS;
     } catch {
       setLiveState("Live updates delayed");
-      setNotice({ kind: "error", text: "We couldn’t update live scores. Retrying automatically." });
+      setNotice({ kind: "error", text: liveGames ? "We couldn’t update live scores. Retrying automatically." : "We couldn’t refresh scores. Try again." });
       return LIVE_INTERVAL_MS;
     } finally {
       refreshInFlight.current = false;
     }
-  }, [loadDashboard, routeToLogin, setDashboard]);
+  }, [liveGames, loadDashboard, routeToLogin, setDashboard]);
 
   useEffect(() => {
-    if (focus !== "overview" || loading || !hasData) return;
+    if (!scoresPage || loading || !hasData || !liveGames) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -250,7 +210,7 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [focus, hasData, loading, refreshDashboard]);
+  }, [scoresPage, hasData, liveGames, loading, refreshDashboard]);
 
   const disconnect = async (provider: Provider) => {
     setConnectionBusy(provider);
@@ -379,12 +339,13 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
   if (!data) return <DashboardError message="Your dashboard data is unavailable. Please sign in again." onRetry={() => void loadDashboard()} />;
 
   return (
-    <div ref={dashboardShell} className={`dashboard-shell${nflOpen ? " has-nfl-drawer" : focus === "overview" ? " has-nfl-launch" : ""}`} style={{ "--nfl-panel-width": `${panelWidth}px` } as CSSProperties}>
+    <div className="dashboard-shell">
       <main className="dashboard-main" id="overview">
         <header className="dashboard-topbar">
           <Link href="/" className="dashboard-brand"><Wordmark /></Link>
           <nav className="dashboard-nav" aria-label="Dashboard sections">
             <Link href="/dashboard" className={`dashboard-nav-link${focus === "overview" ? " active" : ""}`}>Game center</Link>
+            <Link href="/dashboard/leagues" className={`dashboard-nav-link${focus === "leagues" ? " active" : ""}`}>Leagues</Link>
             <Link href="/dashboard/settings" className={`dashboard-nav-link${focus === "settings" ? " active" : ""}`}>Settings</Link>
             <Link href="/dashboard/help" className={`dashboard-nav-link${focus === "help" ? " active" : ""}`}>Help</Link>
           </nav>
@@ -392,15 +353,15 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
         </header>
         <div className="dashboard-content">
           <header className="dashboard-heading">
-            <div>{focus !== "overview" ? <p className="eyebrow">{focus.toUpperCase()}</p> : null}<h1>{focus === "overview" ? "Matchups" : focus === "settings" ? "Settings" : "Help"}</h1></div>
-            {focus === "overview" ? <div className="dashboard-heading-actions"><span className={`dashboard-live-status${liveState === "Updates paused" ? " is-paused" : ""}`} role="status"><b className="status-dot" /> {liveState}</span><button className="compact-view-toggle" type="button" aria-pressed={compact} onClick={() => setCompact((value) => !value)}>Compact View {compact ? "On" : "Off"}</button></div> : null}
+            <div><h1>{focus === "overview" ? "Matchups" : focus === "leagues" ? "Leagues" : focus === "settings" ? "Settings" : "Help"}</h1></div>
+            {scoresPage ? <div className="dashboard-heading-actions">{liveGames !== false ? <span className={`dashboard-live-status${liveState === "Updates paused" ? " is-paused" : ""}`} role="status"><b className="status-dot" /> {liveState}</span> : <><span className="dashboard-refresh-help">Automatic updates run while NFL games are live.</span><button className="button button-small button-outline" type="button" onClick={() => void refreshDashboard()}>Refresh scores</button></>}</div> : null}
           </header>
 
           {notice && !extensionPending && !picker ? <div className={`dashboard-notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i"}</span>{notice.text}<button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div> : null}
 
-          {focus === "overview" ? <div className={`dashboard-game-layout${nflOpen ? " has-drawer" : ""}`}>{nflOpen ? <><NflDrawer leagues={data.leagues} onClose={closeNfl} /><div className="nfl-resize-handle" role="separator" aria-label="Resize NFL scores" aria-orientation="vertical" aria-valuemin={PANEL_MIN_WIDTH} aria-valuemax={panelWidthLimit()} aria-valuenow={panelWidth} tabIndex={0} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); resizePanel(event.clientX); }} onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) resizePanel(event.clientX); }} onPointerUp={finishResize} onPointerCancel={finishResize} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); nudgePanel(panelWidth + (event.key === "ArrowRight" ? 16 : -16)); } }} /></> : null}<section className="dashboard-matchups" aria-label="League matchups"><MatchupGrid leagues={data.leagues} personalOnly compact={compact} /></section></div> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
+          {focus === "overview" ? <div className="dashboard-game-layout"><section className="dashboard-matchups" aria-label="League matchups"><MatchupGrid leagues={data.leagues} personalOnly /></section></div> : focus === "leagues" ? <LeagueScores leagues={data.leagues} /> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
             <details open><summary>What is the smaller number beneath a score?</summary><p>It is the latest fantasy point projection supplied by your connected provider. A dash means that provider has not supplied one.</p></details>
-            <details><summary>What do the green and red changes mean?</summary><p>Green means the current projection is higher than the saved pregame projection; red means it is lower. The number shows the change in fantasy points.</p></details>
+            <details><summary>What do the green and red changes mean?</summary><p>Green means the current projection is higher than the saved pregame projection; red means it is lower. Player numbers show the point change. Team totals show the adjusted projection.</p></details>
             <details><summary>Why is there no colored change for my league?</summary><p>We can save a pregame comparison only when a league is connected and projections are available before the first NFL game of the week starts. Leagues connected later still show available live projections, without a comparison for that week.</p></details>
             <details><summary>Why is win chance missing?</summary><p>Win chance appears only when your fantasy provider supplies a matchup percentage. We do not calculate our own odds.</p></details>
           </section> : <section className="connection-area" aria-labelledby="connections-title">
@@ -418,9 +379,26 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "s
 
         </div>
       </main>
-      {focus === "overview" && !nflOpen ? <button ref={nflButton} className="nfl-vertical-button" type="button" aria-label="Open NFL scores" aria-controls="nfl-drawer" aria-expanded={false} onClick={toggleNfl}><span>NFL</span><b aria-hidden="true">›</b></button> : null}
+      <NflPanel leagues={data.leagues} />
     </div>
   );
+}
+
+function LeagueScores({ leagues }: { leagues: LeagueSnapshot[] }) {
+  if (!leagues.length) return <div className="empty-inline league-scores-empty"><span>◌</span><div><strong>No leagues yet</strong><p>Connect or import a league to see every matchup score.</p><Link className="text-link" href="/dashboard/settings">Open Settings</Link></div></div>;
+  return <div className="league-scores">{leagues.map((league) => {
+    const teams = new Map(league.teams.map((team) => [team.id, team]));
+    return <section className="league-scores-group" key={`${league.provider}:${league.id}:${league.season}`} aria-label={`${league.name}, ${league.season} season, week ${league.week}`}>
+      <LeagueBanner league={league} />
+      {league.matchups.length ? <div className="league-scores-rows">{league.matchups.map((matchup) => {
+        const home = teams.get(matchup.home);
+        const away = matchup.away ? teams.get(matchup.away) : undefined;
+        return <Link className="league-scores-row" href={`${leagueHref(league)}&matchup=${encodeURIComponent(matchup.home)}`} key={`${matchup.home}:${matchup.away ?? "bye"}`} aria-label={`${home?.name ?? "Home team"} ${formatPoints(home?.points)}, ${away?.name ?? "Bye week"} ${away ? formatPoints(away.points) : "bye"}`}>
+          <span className="league-scores-team">{home ? <TeamLogo team={home} /> : null}<strong>{home?.name ?? "Home team"}</strong></span><b className="league-scores-points">{formatPoints(home?.points)}</b><span className="league-scores-versus">{away ? "VS" : "BYE"}</span><b className="league-scores-points">{away ? formatPoints(away.points) : "—"}</b><span className="league-scores-team is-away">{away ? <TeamLogo team={away} /> : null}<strong>{away?.name ?? "Bye week"}</strong></span><span className="league-scores-arrow" aria-hidden="true">›</span>
+        </Link>;
+      })}</div> : <p className="league-scores-no-games">No matchups in this snapshot yet.</p>}
+    </section>;
+  })}</div>;
 }
 
 function ConnectionCard({ provider, configured, status, connected, reconnect, busy, onConnect, onDisconnect, onDiscover }: { provider: Provider; configured: boolean; status: string; connected: boolean; reconnect: boolean; busy: boolean; onConnect: () => void; onDisconnect: () => void; onDiscover: () => void }) {

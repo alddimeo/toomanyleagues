@@ -28,7 +28,7 @@ export default function HomePage() {
             <a href="#sample" className="text-link">View sample broadcast <span aria-hidden="true">↓</span></a>
           </div>
           <p className="hero-note">Connect ESPN or Yahoo, then import a league by ID. This prototype only shows your connected snapshots.</p>
-          <div className="hero-specs" aria-label="Prototype capabilities"><span><b>02</b> PROVIDERS</span><span><b>10</b> LEAGUE CAP</span><span><b>04s</b> OPT-IN REFRESH</span></div>
+          <div className="hero-specs" aria-label="Prototype capabilities"><span><b>02</b> PROVIDERS</span><span><b>10</b> LEAGUE CAP</span><span><b>30s</b> LIVE REFRESH</span></div>
         </div>
 
         <div className="hero-broadcast" aria-label="Illustrative sample fantasy scoreboard" role="img">
@@ -57,7 +57,7 @@ export default function HomePage() {
         <div className="feature-grid">
           <article className="feature-card feature-card-lime"><span className="feature-number">01 // CONNECT</span><h3>Bring in the sources.</h3><p>Connect a provider account, then pick the leagues that belong on your board.</p><div className="feature-readout"><b>ESPN</b><b>YAHOO</b><span>READY</span></div></article>
           <article className="feature-card feature-card-cream"><span className="feature-number">02 // READ</span><h3>See the score feed.</h3><p>Matchup pairs, team totals, players, and stat lines share the same frame.</p><div className="feature-bars"><i /><i /><i /><i /></div></article>
-          <article className="feature-card feature-card-navy"><span className="feature-number">03 // REFRESH</span><h3>Choose your tempo.</h3><p>Opt into a four-second refresh while this tab is visible. Turn it off anytime.</p><div className="feature-live"><b /> TAB VISIBLE / USER ENABLED</div></article>
+          <article className="feature-card feature-card-navy"><span className="feature-number">03 // REFRESH</span><h3>Stay current on game day.</h3><p>Scores update automatically while NFL games are live. Refresh manually between games.</p><div className="feature-live"><b /> LIVE GAMES / TAB VISIBLE</div></article>
         </div>
       </section>
 

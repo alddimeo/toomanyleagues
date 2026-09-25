@@ -6,7 +6,7 @@ import { nflTeamLogoUrl, parseNflPlays, parseNflScoreboard, type NflGame, type N
 import { startersInGame, startersMentioned } from "@/lib/nfl-highlights";
 
 const ESPN = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/";
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 15_000;
 
 function gameStatus(game: NflGame) {
   if (game.state === "final") return "Final";
@@ -34,6 +34,7 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
   const [playsError, setPlaysError] = useState(false);
   const [loadingScores, setLoadingScores] = useState(true);
   const [loadingPlays, setLoadingPlays] = useState(false);
+  const [showPlayers, setShowPlayers] = useState(false);
   const selectedGame = games.find((game) => game.id === selected);
   const selectedStarters = useMemo(() => selectedGame ? startersInGame(leagues, selectedGame) : [], [leagues, selectedGame]);
   const orderedGames = [...games].sort((a, b) => {
@@ -45,17 +46,20 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let inFlight = false;
+    let hasLiveGame = false;
     const refresh = async () => {
       if (document.visibilityState !== "visible" || inFlight) return;
       inFlight = true;
       try {
-        setGames(parseNflScoreboard(await espnJson("scoreboard", controller.signal)));
+        const nextGames = parseNflScoreboard(await espnJson("scoreboard", controller.signal));
+        setGames(nextGames);
+        hasLiveGame = nextGames.some((game) => game.state === "live");
         setScoresError(false);
       } catch {
         if (!controller.signal.aborted) setScoresError(true);
       } finally {
         inFlight = false;
-        if (!controller.signal.aborted) { setLoadingScores(false); timer = setTimeout(() => void refresh(), REFRESH_MS); }
+        if (!controller.signal.aborted) { setLoadingScores(false); if (hasLiveGame) timer = setTimeout(() => void refresh(), REFRESH_MS); }
       }
     };
     const resume = () => {
@@ -68,6 +72,7 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
 
   useEffect(() => {
     if (!selected) return;
+    const isLive = selectedGame?.state === "live";
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let inFlight = false;
@@ -83,7 +88,7 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
         if (!controller.signal.aborted) setPlaysError(true);
       } finally {
         inFlight = false;
-        if (!controller.signal.aborted) { setLoadingPlays(false); timer = setTimeout(() => void refresh(), REFRESH_MS); }
+        if (!controller.signal.aborted) { setLoadingPlays(false); if (isLive) timer = setTimeout(() => void refresh(), REFRESH_MS); }
       }
     };
     const resume = () => {
@@ -92,7 +97,7 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
     document.addEventListener("visibilitychange", resume);
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", resume); };
-  }, [selected]);
+  }, [selected, selectedGame?.state]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -101,9 +106,9 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
   }, [onClose]);
 
   return <aside className="nfl-drawer" id="nfl-drawer" aria-label="NFL scores">
-    <header className="nfl-drawer-head"><div><p className="eyebrow">NFL GAME CENTER</p><h2>Live scores</h2></div><button className="nfl-vertical-button" type="button" aria-label="Close NFL scores" aria-controls="nfl-drawer" aria-expanded={true} onClick={onClose} autoFocus><span>NFL</span><b aria-hidden="true">‹</b></button></header>
-    <div className="nfl-drawer-legend"><span className="nfl-you">Your starter</span><span className="nfl-opponent">Opponent starter</span><span className="nfl-both">Both across leagues</span></div>
-    {scoresError ? <p className="nfl-drawer-message" role="status">NFL scores are temporarily unavailable. Retrying automatically.</p> : null}
+    <header className="nfl-drawer-head"><div><h2>Live Scores</h2></div><button className="nfl-vertical-button" type="button" aria-label="Close NFL scores" aria-controls="nfl-drawer" aria-expanded={true} onClick={onClose} autoFocus><span>NFL</span><b aria-hidden="true">‹</b></button></header>
+    <div className="nfl-drawer-legend"><label><input type="checkbox" checked={showPlayers} onChange={(event) => setShowPlayers(event.target.checked)} /> Show players</label>{showPlayers ? <div className="nfl-drawer-key"><span className="nfl-you">Your starter</span><span className="nfl-opponent">Opponent starter</span><span className="nfl-both">Both across leagues</span></div> : null}</div>
+    {scoresError ? <p className="nfl-drawer-message" role="status">NFL scores are temporarily unavailable.</p> : null}
     {loadingScores ? <p className="nfl-drawer-message" role="status">Loading NFL games…</p> : !games.length ? <p className="nfl-drawer-message">No NFL games are scheduled this week.</p> : null}
     <div className="nfl-drawer-games">
       {orderedGames.map((game) => {
@@ -111,22 +116,26 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
         const open = selected === game.id;
         return <section className={`nfl-game${open ? " is-open" : ""}`} key={game.id}>
           <button className="nfl-game-button" type="button" aria-expanded={open} onClick={() => setSelected(open ? null : game.id)}>
-            <span className="nfl-game-status">{gameStatus(game)}</span>
+            <span className={`nfl-game-status${game.state === "live" ? " is-live" : ""}`}>{gameStatus(game)}</span>
             <span className="nfl-game-score"><span className="nfl-game-team"><img src={nflTeamLogoUrl(game.awayTeam)} alt="" /><span>{game.awayName}</span></span><strong>{game.state === "scheduled" ? "–" : game.awayScore ?? "–"}</strong><span className="nfl-game-team"><img src={nflTeamLogoUrl(game.homeTeam)} alt="" /><span>{game.homeName}</span></span><strong>{game.state === "scheduled" ? "–" : game.homeScore ?? "–"}</strong></span>
-            {starters.length ? <span className="nfl-game-starters">{starters.map((player) => <span className={`nfl-${player.side}`} key={`${player.nflTeam}:${player.name}`}>{player.name}</span>)}</span> : null}
+            {showPlayers && starters.length ? <span className="nfl-game-starters">{starters.map((player) => <span className={`nfl-${player.side}`} key={`${player.nflTeam}:${player.name}`}>{player.name}</span>)}</span> : null}
           </button>
           {open ? <div className="nfl-game-plays" aria-label={`Recent plays for ${game.awayTeam} at ${game.homeTeam}`}>
             <h3>Recent plays</h3>
-            {playsError ? <p className="nfl-drawer-message" role="status">Plays are temporarily unavailable. Retrying automatically.</p> : null}
+            {playsError ? <p className="nfl-drawer-message" role="status">Plays are temporarily unavailable.</p> : null}
             {loadingPlays ? <p className="nfl-drawer-message">Loading plays…</p> : !plays.length ? <p className="nfl-drawer-message">No plays yet.</p> : <ol>{plays.map((play) => {
               const mentioned = startersMentioned(play.text, selectedStarters);
-              const side = mentioned.some((player) => player.side === "both") || (mentioned.some((player) => player.side === "you") && mentioned.some((player) => player.side === "opponent")) ? "both" : mentioned[0]?.side;
-              return <li className={side ? `nfl-play-${side}` : ""} key={play.id}><time>{playTime(play)}</time><span>{play.text}</span>{mentioned.length ? <small>{mentioned.map((player) => player.name).join(", ")}</small> : null}</li>;
+              let offset = 0;
+              const text = mentioned.flatMap((player) => {
+                const before = play.text.slice(offset, player.start);
+                offset = player.end;
+                return [before, <strong className={`nfl-${player.side}`} key={player.start}>{play.text.slice(player.start, player.end)}</strong>];
+              });
+              return <li key={play.id}><time>{playTime(play)}</time><span>{text}{play.text.slice(offset)}</span></li>;
             })}</ol>}
           </div> : null}
         </section>;
       })}
     </div>
-    <footer className="nfl-drawer-foot">Scores and plays from ESPN · Updates every 30 seconds while open</footer>
   </aside>;
 }

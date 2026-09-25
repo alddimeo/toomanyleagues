@@ -553,27 +553,23 @@ export async function fetchYahooLeague(
   ]);
   const snapshot = parseYahooLeagueSnapshot({ metadata, roster }, key, season, scoreboard);
   if (!snapshot.teams.length) throw new AppError('Invalid Yahoo league response', 502);
-  const projectionsAt = previous?.yahooProjectionsAt ?? previous?.fetchedAt;
-  if (previous?.week === week && previous.season === season && previous.id === key &&
-    previous.teams.some((team) => team.players.some((player) => player.projection !== undefined)) &&
-    projectionsAt && Date.now() - Date.parse(projectionsAt) < 300_000) {
+  const providerProjections = new Set(snapshot.teams.flatMap((team) => team.players.filter((player) => player.projection !== undefined).map((player) => player.id)));
+  if (previous?.week === week && previous.season === season && previous.id === key) {
     const saved = new Map(previous.teams.flatMap((team) => team.players.map((player) => [player.id, player.projection] as const)));
     snapshot.teams = snapshot.teams.map((team) => ({ ...team, players: team.players.map((player) => ({
       ...player,
       ...(player.projection === undefined && saved.get(player.id) !== undefined ? { projection: saved.get(player.id) } : {}),
     })) }));
-    snapshot.yahooProjectionsAt = projectionsAt;
-    return snapshot;
   }
-  for (let start = 0; start < snapshot.teams.length; start += 4) {
-    await Promise.all(snapshot.teams.slice(start, start + 4).map(async (team) => {
-      const projections = await yahooRosterPage(credentials, key, team.id, season, week);
-      team.players = team.players.map((player) => {
-        const projection = projections.get(player.id.split('.').at(-1)!);
-        return projection === undefined ? player : { ...player, projection };
-      });
-    }));
-  }
+  // ponytail: one roster page per refresh; a full league takes one refresh per team.
+  const index = (previous?.week === week && previous.season === season && previous.id === key ? previous.yahooProjectionCursor ?? 0 : 0) % snapshot.teams.length;
+  const team = snapshot.teams[index];
+  const projections = await yahooRosterPage(credentials, key, team.id, season, week);
+  team.players = team.players.map((player) => {
+    const projection = projections.get(player.id.split('.').at(-1)!);
+    return projection === undefined || providerProjections.has(player.id) ? player : { ...player, projection };
+  });
+  snapshot.yahooProjectionCursor = (index + 1) % snapshot.teams.length;
   snapshot.yahooProjectionsAt = new Date().toISOString();
   return snapshot;
 }

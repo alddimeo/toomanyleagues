@@ -82,4 +82,8 @@ test('shows recent plays and identifies starters on each side of a fantasy match
   assert.equal(plays[0].timestamp, '2026-09-20T17:02:00Z');
   assert.deepEqual(startersMentioned(plays[0].text, starters).map(({ side }) => side), ['you']);
   assert.deepEqual(startersMentioned(plays[1].text, starters).map(({ side }) => side), ['opponent']);
+  const inline = 'J.Hurts pass to D. Prescott. J.Hurts scrambles.';
+  assert.deepEqual(startersMentioned(inline, starters).map(({ side, start, end }) => [side, inline.slice(start, end)]), [
+    ['opponent', 'J.Hurts'], ['you', 'D. Prescott'], ['opponent', 'J.Hurts'],
+  ]);
 });

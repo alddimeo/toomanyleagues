@@ -76,7 +76,7 @@ export function PlayerGameStatus({ player, season, week }: { player: Player; sea
           ? "Game info unavailable"
           : "Loading game info";
 
-  return <small className="player-game-status" title={label}>{label}</small>;
+  return <small className="player-game-status" data-state={game?.state ?? (scoreboard ? "bye" : undefined)} title={label}>{label}</small>;
 }
 
 export function PlayerDetailsButton({ player, season, week }: { player: Player; season: number; week: number }) {
@@ -91,8 +91,8 @@ export function PlayerDetailsButton({ player, season, week }: { player: Player; 
     <button className="player-name-button" type="button" aria-haspopup="dialog" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>{player.name}</button>
     <dialog className="player-modal" ref={dialog} aria-labelledby={titleId} onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }} onClose={() => setOpen(false)}>
       <div className="player-modal-head"><div>{image ? <img src={image} alt="" /> : null}<span><small>{player.position || "PLAYER"} · {player.nflTeam || "NFL"}</small><h2 id={titleId}>{player.name}</h2></span></div><button type="button" aria-label="Close player details" onClick={() => dialog.current?.close()}>×</button></div>
-      <div className="player-modal-summary"><span>{player.slot || "Roster"}</span><strong>{points} fantasy points</strong></div>
-      <ProjectionValue value={player.projection} baseline={player.pregameProjection} />
+      <div className="player-modal-summary"><span>{player.slot || "Roster"}</span><strong><span className="player-modal-points">{points}</span> fantasy points</strong></div>
+      <ProjectionValue value={player.projection} baseline={player.pregameProjection} held={player.projectionHeld} />
       {open ? <PlayerGameStatus player={player} season={season} week={week} /> : null}
       {stats.length ? <dl className="player-modal-stats">{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}</dl> : null}
     </dialog>

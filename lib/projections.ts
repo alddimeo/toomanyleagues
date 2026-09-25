@@ -1,4 +1,5 @@
 import type { LeagueSnapshot, Player, Team } from './types';
+import { normalizeNflTeam, type NflGame } from './nfl';
 
 export function isBench(player: Player): boolean {
   return /^(BE|BN|BENCH|IR)$/i.test(player.slot.trim());
@@ -35,4 +36,13 @@ export function carryPregame(fresh: LeagueSnapshot, old?: LeagueSnapshot, before
 
 export function withTeamProjection(team: Team): Team {
   return { ...team, projection: team.projection ?? starterProjection(team.players) };
+}
+
+export function holdUpcomingYahooProjections(snapshot: LeagueSnapshot, games: NflGame[], now = Date.now()): LeagueSnapshot {
+  if (snapshot.provider !== 'yahoo') return snapshot;
+  const upcoming = new Set(games.filter((game) => game.state === 'scheduled' && game.date && Date.parse(game.date) > now)
+    .flatMap((game) => [game.homeTeam, game.awayTeam]));
+  return { ...snapshot, teams: snapshot.teams.map((team) => ({ ...team, players: team.players.map((player) => ({
+    ...player, projectionHeld: player.pregameProjection !== undefined && upcoming.has(normalizeNflTeam(player.nflTeam) || ''),
+  })) })) };
 }

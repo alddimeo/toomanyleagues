@@ -348,15 +348,15 @@ function playerPoints(entry: JsonObject, season: number, scoring: number, scoped
 function playerProjection(entry: JsonObject, season: number, scoring: number): number | undefined {
   const pool = object(entry.playerPoolEntry);
   const player = playerObject(entry);
-  const direct = firstNumber(pool?.projectedPoints, entry.projectedPoints, player.projectedPoints);
-  if (direct !== null) return direct;
   for (const source of [pool?.stats, player.stats, entry.stats]) {
-    const projected = array(source).find((stat) => integer(stat.statSourceId) === 1 &&
-      integer(stat.seasonId) === season && integer(stat.scoringPeriodId) === scoring);
+    const stats = array(source);
+    const current = (stat: JsonObject) => integer(stat.statSourceId) === 1 &&
+      integer(stat.seasonId) === season && integer(stat.scoringPeriodId) === scoring;
+    const projected = stats.find((stat) => current(stat) && (integer(stat.statTypeId) ?? 0) === 0) ?? stats.find(current);
     const points = firstNumber(projected?.appliedStatTotal, projected?.appliedTotal);
     if (points !== null) return points;
   }
-  return undefined;
+  return firstNumber(pool?.projectedPoints, entry.projectedPoints, player.projectedPoints) ?? undefined;
 }
 
 function player(entry: JsonObject, season: number, scoring: number, scoped: boolean): Player | null {

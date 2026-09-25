@@ -6,7 +6,7 @@ import type { Provider } from './types';
 import { espnTeamLogoProxyPath, fetchEspnLeague, type EspnLeagueOption } from './espn';
 import { fetchYahooLeague, type YahooCredentials } from './yahoo';
 import { fetchNflScoreboard } from './nfl';
-import { carryPregame } from './projections';
+import { carryPregame, holdUpcomingYahooProjections } from './projections';
 import type { LeagueSnapshot } from './types';
 
 export async function prepareLeagueSnapshot(fresh: LeagueSnapshot, old?: LeagueSnapshot): Promise<LeagueSnapshot> {
@@ -16,8 +16,8 @@ export async function prepareLeagueSnapshot(fresh: LeagueSnapshot, old?: LeagueS
     const games = await fetchNflScoreboard(fresh.season, fresh.week);
     beforeKickoff = games.length > 0 && games.every((game) => game.state === 'scheduled' &&
       game.date && Date.parse(game.date) > Date.now());
+    return holdUpcomingYahooProjections(carryPregame(fresh, old, beforeKickoff), games);
   } catch { return carryPregame(fresh, old, !!old?.pregameCapturedAt && old.week === fresh.week); }
-  return carryPregame(fresh, old, beforeKickoff);
 }
 
 export function dashboard(user:User,state:State) {

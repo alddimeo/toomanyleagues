@@ -50,6 +50,14 @@ function LeagueMark({ league }: { league: LeagueSnapshot }) {
   </span>;
 }
 
+export function LeagueBanner({ league }: { league: LeagueSnapshot }) {
+  return <Link className="matchup-card-league" href={leagueHref(league)}>
+    <LeagueMark league={league} />
+    <span><strong>{league.name}</strong><small>{league.provider.toUpperCase()}</small></span>
+    <span aria-hidden="true">→</span>
+  </Link>;
+}
+
 function PlayerHeadshot({ player }: { player: Player }) {
   const image = safeImageUrl(player.headshot);
   return image
@@ -63,19 +71,19 @@ function NflTeamMark({ player }: { player: Player }) {
   return <span className="player-team-mark" title={player.nflTeam || undefined}>{player.nflTeam || player.position || "—"}</span>;
 }
 
-function ScoreTeam({ league, team, fallback, label, away = false }: { league: LeagueSnapshot; team: Team | undefined; fallback: string; label: string; away?: boolean }) {
-  return <div className={`personal-score-team${away ? " is-away" : ""}`}><span className="personal-score-logo">{team ? <TeamLogo team={team} /> : <span className="team-avatar">{initials(fallback)}</span>}</span><span><small>{label}</small><strong>{team ? <Link href={teamHref(league, team.id)}>{team.name}</Link> : fallback}</strong></span></div>;
+function ScoreTeam({ league, team, fallback, label, away = false, link = true }: { league: LeagueSnapshot; team: Team | undefined; fallback: string; label?: string; away?: boolean; link?: boolean }) {
+  return <div className={`personal-score-team${away ? " is-away" : ""}`}><span className="personal-score-logo">{team ? <TeamLogo team={team} /> : <span className="team-avatar">{initials(fallback)}</span>}</span><span>{label ? <small>{label}</small> : null}<strong>{team ? link ? <Link href={teamHref(league, team.id)}>{team.name}</Link> : team.name : fallback}</strong></span></div>;
 }
 
-function Scoreboard({ league, home, away, homeLabel, awayLabel, homeWinProbability }: { league: LeagueSnapshot; home: Team | undefined; away: Team | undefined; homeLabel: string; awayLabel: string; homeWinProbability?: number }) {
+function Scoreboard({ league, home, away, homeLabel, awayLabel, homeWinProbability, linkTeams = true }: { league: LeagueSnapshot; home: Team | undefined; away: Team | undefined; homeLabel?: string; awayLabel?: string; homeWinProbability?: number; linkTeams?: boolean }) {
   return <><div className="personal-scoreboard">
-    <ScoreTeam league={league} team={home} fallback="Home team" label={homeLabel} />
+    <ScoreTeam league={league} team={home} fallback="Home team" label={homeLabel} link={linkTeams} />
     <div className="personal-score-center"><b>{formatPoints(home?.points)}</b><span>{away ? "VS" : "BYE"}</span><b>{away ? formatPoints(away.points) : "—"}</b></div>
-    <ScoreTeam league={league} team={away} fallback="Bye week" label={awayLabel} away />
-  </div><div className="team-projection-strip"><ProjectionValue value={home?.projection} baseline={home?.pregameProjection} />
-    {away ? <ProjectionValue value={away.projection} baseline={away.pregameProjection} /> : <span />}</div>
-    {away && typeof homeWinProbability === 'number' ? <div className="matchup-win-chance" aria-label={`Provider win chance: ${home?.name ?? 'Home'} ${homeWinProbability.toFixed(0)} percent, ${away.name} ${(100 - homeWinProbability).toFixed(0)} percent`}>
-      <span>{league.provider.toUpperCase()} win chance</span><strong>{homeWinProbability.toFixed(0)}%</strong><span className="win-chance-bar"><i style={{ width: `${homeWinProbability}%` }} /></span><strong>{(100 - homeWinProbability).toFixed(0)}%</strong>
+    <ScoreTeam league={league} team={away} fallback="Bye week" label={awayLabel} away link={linkTeams} />
+  </div><div className="team-projection-strip"><ProjectionValue value={home?.projection} baseline={home?.pregameProjection} teamTotal />
+    {away ? <ProjectionValue value={away.projection} baseline={away.pregameProjection} teamTotal /> : <span />}</div>
+    {away && typeof homeWinProbability === 'number' ? <div className="matchup-win-chance" aria-label={`Win chance: ${home?.name ?? 'Home'} ${homeWinProbability.toFixed(0)} percent, ${away.name} ${(100 - homeWinProbability).toFixed(0)} percent`}>
+      <strong>{homeWinProbability.toFixed(0)}%</strong><span className="win-chance-bar"><i style={{ width: `${homeWinProbability}%` }} /></span><strong>{(100 - homeWinProbability).toFixed(0)}%</strong>
     </div> : null}</>;
 }
 
@@ -116,20 +124,11 @@ function positionGroups(players: Player[]) {
 }
 
 function LineupPlayer({ player, league, away = false }: { player: Player; league: LeagueSnapshot; away?: boolean }) {
-  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><ProjectionValue value={player.projection} baseline={player.pregameProjection} /></span></div>;
+  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><ProjectionValue value={player.projection} baseline={player.pregameProjection} held={player.projectionHeld} /></span></div>;
 }
 
-function BenchDisclosure({ players, label, league, open, onToggle, away = false }: { players: Player[]; label: string; league: LeagueSnapshot; open: boolean; onToggle: (open: boolean) => void; away?: boolean }) {
-  if (!players.length) return null;
-  const orderedPlayers = positionGroups(players).flatMap((group) => group.players);
-  return <details className="lineup-bench" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
-    <summary>{label} bench <span>{players.length} players</span></summary>
-    <div className="lineup-players">{orderedPlayers.map((player) => <LineupPlayer key={player.id} player={player} league={league} away={away} />)}</div>
-  </details>;
-}
-
-function MatchupLineups({ league, userTeam, opponent, benchOpen, onBenchToggle }: { league: LeagueSnapshot; userTeam: Team; opponent: Team | undefined; benchOpen: boolean; onBenchToggle: (open: boolean) => void }) {
-  const homePlayers = userTeam.players ?? [];
+function MatchupLineups({ league, userTeam, opponent, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; neutral?: boolean }) {
+  const homePlayers = userTeam?.players ?? [];
   const homeStarters = homePlayers.filter((player) => !isBench(player));
   const homeGroups = positionGroups(homeStarters.length ? homeStarters : homePlayers);
   const homeBench = homeStarters.length ? homePlayers.filter(isBench) : [];
@@ -144,11 +143,11 @@ function MatchupLineups({ league, userTeam, opponent, benchOpen, onBenchToggle }
   });
 
   return <div className="matchup-lineups" aria-label="Starting lineups">
-    <div className="matchup-lineups-head">
-      <div className="lineup-side-label">YOUR LINEUP</div>
+    {neutral ? <div className="matchup-lineups-head">
+      <div className="lineup-side-label">HOME LINEUP</div>
       <div aria-hidden="true" />
-      <div className="lineup-side-label">{opponent ? "OPPONENT LINEUP" : ""}</div>
-    </div>
+      <div className="lineup-side-label">{opponent ? "AWAY LINEUP" : ""}</div>
+    </div> : null}
     {!homeGroups.length || (opponent && !awayGroups.length) ? <div className="lineup-position-empty">
       {homeGroups.length ? <div /> : <p>No players in this snapshot.</p>}
       <div aria-hidden="true" />
@@ -159,50 +158,46 @@ function MatchupLineups({ league, userTeam, opponent, benchOpen, onBenchToggle }
       <div className="lineup-position-label">{label}</div>
       <div className="lineup-position-cell">{away?.players[index] ? <LineupPlayer player={away.players[index]} league={league} away /> : null}</div>
     </div>))}
-    {(homeBench.length || awayBench.length) ? <div className="lineup-bench-grid">
-      <BenchDisclosure players={homeBench} label="Your" league={league} open={benchOpen} onToggle={onBenchToggle} />
-      <div aria-hidden="true" />
-      {opponent ? <BenchDisclosure players={awayBench} label="Opponent" league={league} open={benchOpen} onToggle={onBenchToggle} away /> : null}
-    </div> : null}
+    {(homeBench.length || awayBench.length) ? <details className="lineup-bench">
+      <summary>Bench</summary>
+      <div className="lineup-bench-grid">
+        <div className="lineup-players" role="group" aria-label={neutral ? "Home bench" : "Your bench"}>{positionGroups(homeBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} />)}</div>
+        <div aria-hidden="true" />
+        {opponent ? <div className="lineup-players" role="group" aria-label={neutral ? "Away bench" : "Opponent bench"}>{positionGroups(awayBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} away />)}</div> : null}
+      </div>
+    </details> : null}
   </div>;
 }
 
-function PersonalMatchupCard({ league, matchup, index, userTeam, opponent }: { league: LeagueSnapshot; matchup: LeagueSnapshot['matchups'][number]; index: number; userTeam: Team; opponent: Team | undefined }) {
-  const [benchOpen, setBenchOpen] = useState(false);
+function PersonalMatchupCard({ league, matchup, userTeam, opponent }: { league: LeagueSnapshot; matchup: LeagueSnapshot['matchups'][number]; userTeam: Team; opponent: Team | undefined }) {
   return <article className="matchup-card dashboard-matchup-card lineup-card">
-    <Link className="matchup-card-league" href={leagueHref(league)}>
-      <LeagueMark league={league} />
-      <span><strong>{league.name}</strong><small>{league.provider.toUpperCase()} · WEEK {league.week || "—"}</small></span>
-      <span aria-hidden="true">→</span>
-    </Link>
-    <div className="matchup-card-top"><span>WEEK {league.week || "—"} · MATCHUP {index + 1}</span><span className="matchup-live-mark"><i /> {opponent ? "CURRENT" : "BYE"}</span></div>
-    <Scoreboard league={league} home={userTeam} away={opponent} homeLabel="YOUR TEAM" awayLabel="OPPONENT" homeWinProbability={matchup.homeWinProbability === undefined ? undefined : matchup.home === userTeam.id ? matchup.homeWinProbability : 100 - matchup.homeWinProbability} />
-    <MatchupLineups league={league} userTeam={userTeam} opponent={opponent} benchOpen={benchOpen} onBenchToggle={setBenchOpen} />
+    <LeagueBanner league={league} />
+    <Scoreboard league={league} home={userTeam} away={opponent} homeWinProbability={matchup.homeWinProbability === undefined ? undefined : matchup.home === userTeam.id ? matchup.homeWinProbability : 100 - matchup.homeWinProbability} />
+    <MatchupLineups league={league} userTeam={userTeam} opponent={opponent} />
     <div className="matchup-card-foot"><span>{userTeam.players?.length ?? 0} user players</span><span>{opponent ? (opponent.players?.length ?? 0) + " opponent players" : "No opponent"}</span></div>
   </article>;
 }
-function MatchupCard({ league, matchup, index, personalOnly }: { league: LeagueSnapshot; matchup: LeagueSnapshot["matchups"][number]; index: number; personalOnly: boolean }) {
+function MatchupCard({ league, matchup, personalOnly, open, onToggle }: { league: LeagueSnapshot; matchup: LeagueSnapshot["matchups"][number]; personalOnly: boolean; open: boolean; onToggle: () => void }) {
   const teamById = new Map(league.teams.map((team) => [team.id, team]));
   const home = teamById.get(matchup.home);
   const away = matchup.away ? teamById.get(matchup.away) : undefined;
   const userTeam = personalOnly ? league.teams.find((team) => team.isUserTeam) : undefined;
   if (userTeam) {
     const opponentId = matchup.home === userTeam.id ? matchup.away : matchup.home;
-    return <PersonalMatchupCard league={league} matchup={matchup} index={index} userTeam={userTeam} opponent={opponentId ? teamById.get(opponentId) : undefined} />;
+    return <PersonalMatchupCard league={league} matchup={matchup} userTeam={userTeam} opponent={opponentId ? teamById.get(opponentId) : undefined} />;
   }
-  return <article className="matchup-card dashboard-matchup-card">
-    <Link className="matchup-card-league" href={leagueHref(league)}>
-      <LeagueMark league={league} />
-      <span><strong>{league.name}</strong><small>{league.provider.toUpperCase()} · WEEK {league.week || "—"}</small></span>
-      <span aria-hidden="true">→</span>
-    </Link>
-    <div className="matchup-card-top"><span>MATCHUP {index + 1}</span><span>{away ? "SCORE SNAPSHOT" : "BYE"}</span></div>
-    <Scoreboard league={league} home={home} away={away} homeLabel="HOME" awayLabel="AWAY" homeWinProbability={matchup.homeWinProbability} />
-    <div className="matchup-card-foot"><span>{home?.players?.length ?? 0} players</span><span>{away?.players?.length ?? 0} players</span></div>
+  return <article className={`matchup-card dashboard-matchup-card${open ? " is-selected" : ""}`}>
+    <button className="league-matchup-toggle" type="button" aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} players for ${home?.name ?? "Home team"} ${away ? `versus ${away.name}` : "bye"}`} onClick={onToggle}>
+      <span className="matchup-card-top"><span>{open ? "HIDE PLAYERS −" : "SHOW PLAYERS +"}</span></span>
+      <Scoreboard league={league} home={home} away={away} homeLabel="HOME" awayLabel="AWAY" homeWinProbability={matchup.homeWinProbability} linkTeams={false} />
+    </button>
+    {open ? <MatchupLineups league={league} userTeam={home} opponent={away} neutral /> : null}
   </article>;
 }
 
-export function MatchupGrid({ leagues, personalOnly = false, compact = false }: { leagues: LeagueSnapshot[]; personalOnly?: boolean; compact?: boolean }) {
+export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, layout = "rail" }: { leagues: LeagueSnapshot[]; personalOnly?: boolean; initialMatchup?: string; layout?: "rail" | "grid" }) {
+  const [openMatchup, setOpenMatchup] = useState<string | null>(initialMatchup ?? null);
+  useEffect(() => { setOpenMatchup(initialMatchup ?? null); }, [initialMatchup]);
   const cards = leagues.flatMap((league) => {
     const userTeam = personalOnly ? league.teams.find((team) => team.isUserTeam) : undefined;
     const matchups = personalOnly && userTeam ? league.matchups.filter((matchup) => matchup.home === userTeam.id || matchup.away === userTeam.id) : personalOnly ? [] : league.matchups ?? [];
@@ -220,6 +215,7 @@ export function MatchupGrid({ leagues, personalOnly = false, compact = false }: 
     let lastFromGrid = grid.scrollLeft;
     const syncSize = () => {
       track.style.width = `${grid.scrollWidth}px`;
+      top.hidden = grid.scrollWidth <= grid.clientWidth + 1;
       lastFromGrid = grid.scrollLeft;
       top.scrollLeft = lastFromGrid;
     };
@@ -228,20 +224,27 @@ export function MatchupGrid({ leagues, personalOnly = false, compact = false }: 
     syncSize();
     grid.addEventListener("scroll", onGridScroll, { passive: true });
     top.addEventListener("scroll", onTopScroll, { passive: true });
-    window.addEventListener("resize", syncSize);
+    const resizeObserver = new ResizeObserver(syncSize);
+    resizeObserver.observe(grid);
     return () => {
       grid.removeEventListener("scroll", onGridScroll);
       top.removeEventListener("scroll", onTopScroll);
-      window.removeEventListener("resize", syncSize);
+      resizeObserver.disconnect();
     };
-  }, [cards.length, compact]);
+  }, [cards.length]);
 
   if (!cards.length) return <div className="empty-inline"><span>◌</span><div><strong>{personalOnly ? "No personal matchup snapshots yet" : "No league matchups yet"}</strong><p>{personalOnly ? "Connect or import leagues in Settings to load your current matchup." : "Connect a source in Settings to add leagues and see this week’s scores."}</p><Link className="text-link" href="/dashboard/settings">Open Settings</Link></div></div>;
 
+  const orderedCards = openMatchup && layout === "grid" ? [...cards].sort((a, b) => Number(b.matchup.home === openMatchup) - Number(a.matchup.home === openMatchup)) : cards;
+  const matchupCards = orderedCards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} personalOnly={personalOnly} open={!personalOnly && openMatchup === matchup.home} onToggle={() => setOpenMatchup((current) => current === matchup.home ? null : matchup.home)} />);
+  if (layout === "grid") return <div id="league-matchup-grid" className={`matchup-grid league-matchup-grid${openMatchup ? " has-open-matchup" : ""}`} aria-label="League matchups">
+    {openMatchup ? <><div className="league-matchup-expanded">{matchupCards[0]}</div>{matchupCards.length > 1 ? <div className="league-matchup-compact">{matchupCards.slice(1)}</div> : null}</> : matchupCards}
+  </div>;
+
   return <div className="matchup-rail">
     <div ref={topScrollRef} className="matchup-top-scroll" role="region" aria-label="Top league scrollbar" tabIndex={0}><div ref={topTrackRef} className="matchup-top-scroll-track" /></div>
-    <div ref={gridRef} id="dashboard-league-cards" className={"matchup-grid dashboard-matchup-grid" + (compact ? " is-compact" : "")} role="region" aria-label="League matchups; scroll horizontally for more" tabIndex={0}>
-      {cards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} index={index} personalOnly={personalOnly} />)}
+    <div ref={gridRef} id="dashboard-league-cards" className="matchup-grid dashboard-matchup-grid" role="region" aria-label="League matchups; scroll horizontally for more" tabIndex={0}>
+      {matchupCards}
     </div>
   </div>;
 }
@@ -251,5 +254,5 @@ export function TeamRoster({ league, team }: { league: LeagueSnapshot; team: Tea
 
 function PlayerRow({ player, league }: { player: Player; league: LeagueSnapshot }) {
   const stats = Object.entries(playerStatsWithDefaults(player));
-  return <tr><td><span className="roster-player"><PlayerHeadshot player={player} /><span><PlayerDetailsButton player={player} season={league.season} week={league.week} /><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span></td><td>{player.slot || "—"}</td><td className="player-points">{formatPoints(player.points)}<ProjectionValue value={player.projection} baseline={player.pregameProjection} /></td><td>{stats.length ? <details className="player-stats"><summary>View</summary><dl>{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}</dl></details> : <span className="muted-dash">—</span>}</td></tr>;
+  return <tr><td><span className="roster-player"><PlayerHeadshot player={player} /><span><PlayerDetailsButton player={player} season={league.season} week={league.week} /><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span></td><td>{player.slot || "—"}</td><td className="player-points"><span className="player-score">{formatPoints(player.points)}</span><ProjectionValue value={player.projection} baseline={player.pregameProjection} held={player.projectionHeld} /></td><td>{stats.length ? <details className="player-stats"><summary>View</summary><dl>{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}</dl></details> : <span className="muted-dash">—</span>}</td></tr>;
 }

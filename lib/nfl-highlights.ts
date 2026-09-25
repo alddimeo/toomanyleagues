@@ -26,14 +26,22 @@ export function startersInGame(leagues: LeagueSnapshot[], game: NflGame): Highli
   return [...found.values()];
 }
 
-export function startersMentioned(text: string, starters: HighlightedStarter[]): HighlightedStarter[] {
-  return starters.filter((player) => {
+export function startersMentioned(text: string, starters: HighlightedStarter[]): (HighlightedStarter & { start: number; end: number })[] {
+  const matches: (HighlightedStarter & { start: number; end: number })[] = [];
+  for (const player of starters) {
     const parts = player.name.trim().split(/\s+/);
     const surname = parts.at(-1)?.replace(/[^A-Za-z'-]/g, '');
     const initial = parts[0]?.[0];
-    if (!surname || !initial || surname.length < 3) return false;
+    if (!surname || !initial || surname.length < 3) continue;
     const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?:^|[^A-Za-z])${escape(initial)}\\.\\s*${escape(surname)}(?:$|[^A-Za-z])`, 'i').test(text) ||
-      new RegExp(`(?:^|[^A-Za-z])${escape(player.name)}(?:$|[^A-Za-z])`, 'i').test(text);
+    const pattern = new RegExp(`(?<![A-Za-z])(?:${escape(player.name)}|${escape(initial)}\\.\\s*${escape(surname)})(?![A-Za-z])`, 'gi');
+    for (const match of text.matchAll(pattern)) matches.push({ ...player, start: match.index, end: match.index + match[0].length });
+  }
+  matches.sort((a, b) => a.start - b.start || b.end - a.end);
+  let end = 0;
+  return matches.filter((match) => {
+    if (match.start < end) return false;
+    end = match.end;
+    return true;
   });
 }

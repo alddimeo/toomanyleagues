@@ -337,7 +337,7 @@ test('rejects unsafe Yahoo cookies before sending a request', async () => {
   await assert.rejects(() => discoverYahooLeagues({ Y: 'bad\r\nX-Leak: yes', T: 'valid' }), /Invalid Yahoo session/);
 });
 
-test('fetches metadata first, then requests the current roster period and scoreboard', async () => {
+test('fetches one Yahoo roster page per refresh and rotates teams', async () => {
   const requests: { url: string; init?: RequestInit }[] = [];
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
@@ -365,6 +365,8 @@ test('fetches metadata first, then requests the current roster period and scoreb
                 teams: {
                   '0': { team: [[{ team_key: '449.l.123.t.1' }, { name: 'Team One' }],
                     { roster: { players: { '0': { player: [[{ player_key: '449.p.10' }, { name: { full: 'Player' } }]] } } } }] },
+                  '1': { team: [[{ team_key: '449.l.123.t.2' }, { name: 'Team Two' }],
+                    { roster: { players: { '0': { player: [[{ player_key: '449.p.11' }, { name: { full: 'Other' } }]] } } } }] },
                 },
               },
             ],
@@ -374,6 +376,10 @@ test('fetches metadata first, then requests the current roster period and scoreb
     }
     if (url.includes('football.fantasysports.yahoo.com/2024/f1/123/1?')) {
       return new Response('<table><tr><th>Player</th><th>Proj Pts</th></tr><tr><td><a data-ys-playerid="10">Player</a></td><td>17.5</td></tr></table>',
+        { headers: { 'content-type': 'text/html' } });
+    }
+    if (url.includes('football.fantasysports.yahoo.com/2024/f1/123/2?')) {
+      return new Response('<table><tr><th>Player</th><th>Proj Pts</th></tr><tr><td><a data-ys-playerid="11">Other</a></td><td>19.25</td></tr></table>',
         { headers: { 'content-type': 'text/html' } });
     }
     assert.match(url, /\/scoreboard;week=4\?format=json$/);
@@ -392,15 +398,19 @@ test('fetches metadata first, then requests the current roster period and scoreb
   assert.equal(snapshot.week, 4);
   assert.equal(snapshot.teams[0].id, '449.l.123.t.1');
   assert.equal(snapshot.teams[0].players[0].projection, 17.5);
+  assert.equal(snapshot.teams[1].players[0].projection, undefined);
+  assert.equal(snapshot.yahooProjectionCursor, 1);
   assert.ok(snapshot.yahooProjectionsAt);
   requests.length = 0;
   const refreshed = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024, snapshot);
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4);
+  assert.match(requests[3].url, /\/123\/2\?/);
   assert.equal(refreshed.teams[0].players[0].projection, 17.5);
-  assert.equal(refreshed.yahooProjectionsAt, snapshot.yahooProjectionsAt);
+  assert.equal(refreshed.teams[1].players[0].projection, 19.25);
+  assert.equal(refreshed.yahooProjectionCursor, 0);
   requests.length = 0;
-  const legacy = { ...snapshot, yahooProjectionsAt: undefined };
-  const seeded = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024, legacy);
-  assert.equal(requests.length, 3);
-  assert.equal(seeded.yahooProjectionsAt, snapshot.fetchedAt);
+  const next = await fetchYahooLeague({ Y: 'y-cookie', T: 't-cookie' }, '449.l.123', 2024, refreshed);
+  assert.equal(requests.length, 4);
+  assert.match(requests[3].url, /\/123\/1\?/);
+  assert.equal(next.teams[1].players[0].projection, 19.25);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { carryPregame, starterProjection } from '../lib/projections';
+import { carryPregame, holdUpcomingYahooProjections, starterProjection } from '../lib/projections';
 import type { LeagueSnapshot, Player } from '../lib/types';
 
 const player = (id: string, projection?: number, slot = 'QB'): Player => ({ id, name: id, position: 'QB', slot, points: 0, stats: {}, ...(projection === undefined ? {} : { projection }) });
@@ -28,4 +28,23 @@ test('pregame values stay fixed, disappear for late imports, and reset in a new 
   assert.equal(late.pregameClosed, true);
   assert.equal(carryPregame(league(1, [16, 7]), late, true).teams[0].pregameProjection, undefined);
   assert.equal(carryPregame(league(2, [12, 9]), pregame, true).teams[0].pregameProjection, 21);
+});
+
+test('Yahoo holds player projections until their own games start', () => {
+  const snapshot = carryPregame(league(1, [10, 8]), undefined, true);
+  snapshot.provider = 'yahoo';
+  snapshot.teams[0].players[0].nflTeam = 'KC';
+  snapshot.teams[0].players[1].nflTeam = 'BUF';
+  const live = carryPregame(league(1, [12, 6]), snapshot);
+  live.provider = 'yahoo';
+  live.teams[0].players[0].nflTeam = 'KC';
+  live.teams[0].players[1].nflTeam = 'BUF';
+  const games = [
+    { id: '1', homeTeam: 'KC', awayTeam: 'DAL', homeName: 'KC', awayName: 'DAL', homeScore: 0, awayScore: 0, date: '2026-09-02T00:00:00Z', state: 'scheduled' as const, period: null, clock: null },
+    { id: '2', homeTeam: 'BUF', awayTeam: 'MIA', homeName: 'BUF', awayName: 'MIA', homeScore: 0, awayScore: 0, date: '2026-09-01T00:00:00Z', state: 'live' as const, period: 1, clock: null },
+  ];
+  const held = holdUpcomingYahooProjections(live, games, Date.parse('2026-09-01T12:00:00Z'));
+  assert.deepEqual(held.teams[0].players.map((item) => item.projectionHeld), [true, false]);
+  assert.deepEqual(held.teams[0].players.map((item) => item.projection), [12, 6]);
+  assert.deepEqual(holdUpcomingYahooProjections({ ...live, provider: 'espn' }, games).teams[0].players.map((item) => item.projectionHeld), [undefined, undefined]);
 });
