@@ -40,19 +40,32 @@ export async function POST(request:Request,context:Context) {
         return {ok:true,leagues};
       }));
     }
-    if(path==='refresh') return json(await withState(user.id,async state=>{
+    if(path==='refresh') {
+      const input=await body(request), rawFocus=input.yahooFocus;
+      let yahooFocus:{leagueId:string;teamIds:string[]}|undefined;
+      if(rawFocus!==undefined) {
+        if(!rawFocus || typeof rawFocus!=='object' || Array.isArray(rawFocus)) throw new AppError('Invalid Yahoo projection focus.');
+        const focus=rawFocus as Record<string,unknown>, leagueId=String(focus.leagueId || ''), teamIds=focus.teamIds;
+        if(!/^(?:nfl|\d{1,4})\.l\.\d{1,12}$/.test(leagueId) || !Array.isArray(teamIds) || teamIds.length>2 || teamIds.some(id=>typeof id!=='string' || !/^\d{1,4}\.l\.\d{1,12}\.t\.\d{1,12}$/.test(id))) throw new AppError('Invalid Yahoo projection focus.');
+        yahooFocus={leagueId,teamIds};
+      }
+      return json(await withState(user.id,async state=>{
       if(state.nextRefreshAt && state.nextRefreshAt>Date.now()) throw new AppError('Wait before refreshing again.',429,Math.ceil((state.nextRefreshAt-Date.now())/1000));
       state.nextRefreshAt=Date.now()+4000;
       const yahooCredentials=state.leagues?.some(x=>x.provider==='yahoo') ? yahooAccess(user.id,state) : undefined;
       const results=await Promise.allSettled((state.leagues || []).map(async old=>{
-        const fresh=await fetchLeague(user.id,state,old.provider,old.id,old.season,yahooCredentials,old);
+        const focusIds=old.provider==='yahoo' && yahooFocus ? (old.id===yahooFocus.leagueId ? yahooFocus.teamIds.filter(id=>old.teams.some(team=>team.id===id)) : []) : undefined;
+        const fresh=await fetchLeague(user.id,state,old.provider,old.id,old.season,yahooCredentials,old,focusIds);
         const prepared=await prepareLeagueSnapshot(fresh,old);
         state.leagues=state.leagues!.map(x=>x.id===old.id && x.provider===old.provider && x.season===old.season ? prepared : x);
       }));
       const failed=results.find(x=>x.status==='rejected');
       if(failed?.status==='rejected') throw failed.reason;
+      const refreshedAt=new Date().toISOString();
+      state.leagues=(state.leagues || []).map(league=>({...league,fetchedAt:refreshedAt}));
       return dashboard(user,state);
-    }));
+      }));
+    }
     if(path==='espn/import') {
       const input=await body(request), raw=input.leagues;
       if(!Array.isArray(raw) || raw.length>10) throw new AppError('Choose up to ten ESPN leagues.');

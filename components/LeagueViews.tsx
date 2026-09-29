@@ -5,8 +5,7 @@ import Link from "next/link";
 import type { LeagueSnapshot, Player, Team } from "@/lib/types";
 import { nflTeamLogoUrl } from "@/lib/nfl";
 import { playerStatsWithDefaults } from "@/lib/player-stats";
-import { PlayerDetailsButton, PlayerGameStatus } from "@/components/PlayerDetails";
-import { ProjectionValue } from "@/components/ProjectionValue";
+import { PlayerDetailsButton, PlayerGameStatus, PlayerProjection, TeamProjection } from "@/components/PlayerDetails";
 import { isBench } from "@/lib/projections";
 
 export function leagueHref(league: Pick<LeagueSnapshot, "provider" | "id" | "season">) {
@@ -78,10 +77,13 @@ function ScoreTeam({ league, team, fallback, label, away = false, link = true }:
 function Scoreboard({ league, home, away, homeLabel, awayLabel, homeWinProbability, linkTeams = true }: { league: LeagueSnapshot; home: Team | undefined; away: Team | undefined; homeLabel?: string; awayLabel?: string; homeWinProbability?: number; linkTeams?: boolean }) {
   return <><div className="personal-scoreboard">
     <ScoreTeam league={league} team={home} fallback="Home team" label={homeLabel} link={linkTeams} />
-    <div className="personal-score-center"><b>{formatPoints(home?.points)}</b><span>{away ? "VS" : "BYE"}</span><b>{away ? formatPoints(away.points) : "—"}</b></div>
+    <div className="personal-score-center">
+      <div className="personal-score-total"><b>{formatPoints(home?.points)}</b>{home ? <TeamProjection team={home} season={league.season} week={league.week} /> : null}</div>
+      <span>{away ? "VS" : "BYE"}</span>
+      <div className="personal-score-total"><b>{away ? formatPoints(away.points) : "—"}</b>{away ? <TeamProjection team={away} season={league.season} week={league.week} /> : null}</div>
+    </div>
     <ScoreTeam league={league} team={away} fallback="Bye week" label={awayLabel} away link={linkTeams} />
-  </div><div className="team-projection-strip"><ProjectionValue value={home?.projection} baseline={home?.pregameProjection} teamTotal />
-    {away ? <ProjectionValue value={away.projection} baseline={away.pregameProjection} teamTotal /> : <span />}</div>
+  </div>
     {away && typeof homeWinProbability === 'number' ? <div className="matchup-win-chance" aria-label={`Win chance: ${home?.name ?? 'Home'} ${homeWinProbability.toFixed(0)} percent, ${away.name} ${(100 - homeWinProbability).toFixed(0)} percent`}>
       <strong>{homeWinProbability.toFixed(0)}%</strong><span className="win-chance-bar"><i style={{ width: `${homeWinProbability}%` }} /></span><strong>{(100 - homeWinProbability).toFixed(0)}%</strong>
     </div> : null}</>;
@@ -124,7 +126,7 @@ function positionGroups(players: Player[]) {
 }
 
 function LineupPlayer({ player, league, away = false }: { player: Player; league: LeagueSnapshot; away?: boolean }) {
-  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><ProjectionValue value={player.projection} baseline={player.pregameProjection} held={player.projectionHeld} /></span></div>;
+  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
 }
 
 function MatchupLineups({ league, userTeam, opponent, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; neutral?: boolean }) {
@@ -143,11 +145,6 @@ function MatchupLineups({ league, userTeam, opponent, neutral = false }: { leagu
   });
 
   return <div className="matchup-lineups" aria-label="Starting lineups">
-    {neutral ? <div className="matchup-lineups-head">
-      <div className="lineup-side-label">HOME LINEUP</div>
-      <div aria-hidden="true" />
-      <div className="lineup-side-label">{opponent ? "AWAY LINEUP" : ""}</div>
-    </div> : null}
     {!homeGroups.length || (opponent && !awayGroups.length) ? <div className="lineup-position-empty">
       {homeGroups.length ? <div /> : <p>No players in this snapshot.</p>}
       <div aria-hidden="true" />
@@ -195,7 +192,7 @@ function MatchupCard({ league, matchup, personalOnly, open, onToggle }: { league
   </article>;
 }
 
-export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, layout = "rail" }: { leagues: LeagueSnapshot[]; personalOnly?: boolean; initialMatchup?: string; layout?: "rail" | "grid" }) {
+export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, layout = "rail", onMatchupChange }: { leagues: LeagueSnapshot[]; personalOnly?: boolean; initialMatchup?: string; layout?: "rail" | "grid"; onMatchupChange?: (leagueId: string, teamIds: string[]) => void }) {
   const [openMatchup, setOpenMatchup] = useState<string | null>(initialMatchup ?? null);
   useEffect(() => { setOpenMatchup(initialMatchup ?? null); }, [initialMatchup]);
   const cards = leagues.flatMap((league) => {
@@ -236,7 +233,11 @@ export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, lay
   if (!cards.length) return <div className="empty-inline"><span>◌</span><div><strong>{personalOnly ? "No personal matchup snapshots yet" : "No league matchups yet"}</strong><p>{personalOnly ? "Connect or import leagues in Settings to load your current matchup." : "Connect a source in Settings to add leagues and see this week’s scores."}</p><Link className="text-link" href="/dashboard/settings">Open Settings</Link></div></div>;
 
   const orderedCards = openMatchup && layout === "grid" ? [...cards].sort((a, b) => Number(b.matchup.home === openMatchup) - Number(a.matchup.home === openMatchup)) : cards;
-  const matchupCards = orderedCards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} personalOnly={personalOnly} open={!personalOnly && openMatchup === matchup.home} onToggle={() => setOpenMatchup((current) => current === matchup.home ? null : matchup.home)} />);
+  const matchupCards = orderedCards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} personalOnly={personalOnly} open={!personalOnly && openMatchup === matchup.home} onToggle={() => {
+    const opening=openMatchup!==matchup.home;
+    onMatchupChange?.(league.id, opening ? [matchup.home, matchup.away].filter((id): id is string => Boolean(id)) : []);
+    setOpenMatchup(opening ? matchup.home : null);
+  }} />);
   if (layout === "grid") return <div id="league-matchup-grid" className={`matchup-grid league-matchup-grid${openMatchup ? " has-open-matchup" : ""}`} aria-label="League matchups">
     {openMatchup ? <><div className="league-matchup-expanded">{matchupCards[0]}</div>{matchupCards.length > 1 ? <div className="league-matchup-compact">{matchupCards.slice(1)}</div> : null}</> : matchupCards}
   </div>;
@@ -254,5 +255,5 @@ export function TeamRoster({ league, team }: { league: LeagueSnapshot; team: Tea
 
 function PlayerRow({ player, league }: { player: Player; league: LeagueSnapshot }) {
   const stats = Object.entries(playerStatsWithDefaults(player));
-  return <tr><td><span className="roster-player"><PlayerHeadshot player={player} /><span><PlayerDetailsButton player={player} season={league.season} week={league.week} /><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span></td><td>{player.slot || "—"}</td><td className="player-points"><span className="player-score">{formatPoints(player.points)}</span><ProjectionValue value={player.projection} baseline={player.pregameProjection} held={player.projectionHeld} /></td><td>{stats.length ? <details className="player-stats"><summary>View</summary><dl>{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}</dl></details> : <span className="muted-dash">—</span>}</td></tr>;
+  return <tr><td><span className="roster-player"><PlayerHeadshot player={player} /><span><PlayerDetailsButton player={player} season={league.season} week={league.week} /><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span></td><td>{player.slot || "—"}</td><td className="player-points"><span className="player-score">{formatPoints(player.points)}</span><PlayerProjection player={player} season={league.season} week={league.week} /></td><td>{stats.length ? <details className="player-stats"><summary>View</summary><dl>{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{String(value)}</dd></div>)}</dl></details> : <span className="muted-dash">—</span>}</td></tr>;
 }

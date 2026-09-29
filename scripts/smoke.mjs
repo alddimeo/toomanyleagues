@@ -12,7 +12,7 @@ const fixture={user:{email:'tester@example.com'},connections:[{provider:'espn',s
   id:'123',provider:'espn',name:'Test Sunday League',logo:'https://cdn.example/league.png',season:2026,week:1,fetchedAt:new Date().toISOString(),
   teams:[
     {id:'1',name:'Test Home',isUserTeam:true,logo:'/api/espn/team-logo/123e4567-e89b-12d3-a456-426614174000',points:101.25,projection:112.5,pregameProjection:105,players:[
-      {id:'p1',name:'Test Quarterback',position:'QB',slot:'QB',nflTeam:'KC',points:24.5,projection:28.5,pregameProjection:25,stats:{'Passing yards':250}},
+      {id:'p1',name:'Test Quarterback',position:'QB',slot:'QB',nflTeam:'KC',points:24.5,projection:28.5,pregameProjection:25,stats:{'Passing yards':250},statPoints:{'Passing yards':10}},
       {id:'pwr1',name:'Home Receiver',position:'WR',slot:'WR',points:10.2,projection:16.09,pregameProjection:16.09},
       {id:'pwr1b',name:'Home Receiver Two',position:'WR',slot:'WR',points:8.2},
       {id:'pk1',name:'Home Kicker',position:'K',slot:'K',points:7.1},
@@ -22,7 +22,7 @@ const fixture={user:{email:'tester@example.com'},connections:[{provider:'espn',s
       {id:'pflex1',name:'Home Flex',position:'RB',slot:'FLEX',points:12.6},
       {id:'pbench1',name:'Home Bench',position:'RB',slot:'BE',points:5.0},
     ]},
-    {id:'2',name:'Test Away',points:99.5,projection:101,pregameProjection:107,players:[
+    {id:'2',name:'Test Away',logo:'/api/espn/team-logo/223e4567-e89b-12d3-a456-426614174000',points:99.5,projection:101,pregameProjection:107,players:[
       {id:'p2',name:'Opponent Runner',position:'RB',slot:'RB',nflTeam:'DAL',points:18.25,stats:{'Rushing yards':98}},
       {id:'pk2',name:'Away Kicker',position:'K',slot:'K',points:7.3},
       {id:'pflex2',name:'Away Flex',position:'TE',slot:'FLEX',points:11.7},
@@ -80,42 +80,45 @@ try {
   await initialFailedNflCheck;
   await page.getByText('Test Sunday League',{exact:true}).first().waitFor();
   await page.getByRole('status').filter({hasText:'Connecting to live scores'}).waitFor();
-  assert.equal(await page.getByRole('button',{name:'Refresh scores'}).count(),0,'a failed NFL check should not claim there are no live games');
+  assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'a failed NFL check should not claim there are no live games');
   nflScoreboardError=false;
   await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
-  await page.getByRole('button',{name:'Refresh scores'}).waitFor();
+  await page.getByRole('button',{name:'Refresh Lineups'}).waitFor();
   assert.equal(refreshCalls,0,'scheduled games should not trigger provider refreshes');
-  await page.getByRole('button',{name:'Refresh scores'}).click();
+  await page.getByRole('button',{name:'Refresh Lineups'}).click();
   assert.equal(refreshCalls,1,'manual refresh should work between games');
   nflLive=true;
   await page.reload();
   await page.getByRole('alert').filter({hasText:/authorization expired/}).waitFor();
   assert.equal(refreshCalls,2,'live NFL games should trigger a provider refresh');
-  assert.equal(await page.getByRole('button',{name:'Refresh scores'}).count(),0,'manual refresh should be hidden during live games');
+  assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'manual refresh should be hidden during live games');
   nflScoreboardError=true;
   const failedNflCheck=page.waitForResponse(response=>response.url().includes('/api/nfl/scoreboard')&&response.status()===503);
   await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
   await failedNflCheck;
   await page.waitForTimeout(100);
-  assert.equal(await page.getByRole('button',{name:'Refresh scores'}).count(),0,'a failed NFL check should keep the last confirmed live state');
+  assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'a failed NFL check should keep the last confirmed live state');
   nflScoreboardError=false;
   await page.getByText('Test Prior Season',{exact:true}).first().waitFor();
   await page.getByText('Test Yahoo League',{exact:true}).first().waitFor();
   assert.equal(await page.locator('.league-logo:visible').count(),2,'league logos should render');
-  assert.ok(await page.locator('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]:visible').count()>0,'relative ESPN fantasy team logo proxy should render');
-  await page.waitForFunction(()=>{const logo=document.querySelector('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]');return logo?.complete && logo.naturalWidth>0;});
+  assert.ok(await page.locator('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]:visible').count()>=2,'both ESPN fantasy team logos should render');
+  await page.waitForFunction(()=>[...document.querySelectorAll('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]')].every(logo=>logo.complete&&logo.naturalWidth>0));
   assert.ok(await page.getByText('Test Quarterback',{exact:true}).count()>0);
   assert.ok(await page.getByText('Opponent Runner',{exact:true}).count()>0,'opponent lineup should be visible');
   assert.ok(await page.getByText('99.50',{exact:true}).count()>0,'opponent score should be visible');
-  assert.match(await page.locator('.personal-score-center').first().innerText(),/101\.25\s*VS\s*99\.50/,'scores should meet in the middle');
+  assert.match(await page.locator('.personal-score-center').first().innerText(),/101\.25\s*105\.00\s*VS\s*99\.50\s*107\.00/,'scores and pregame projections should meet in the middle');
   const firstCard=page.locator('.dashboard-matchup-card').first();
   assert.equal((await firstCard.locator('.matchup-card-league small').innerText()).trim(),'ESPN','dashboard league source should omit the week');
-  assert.match(await firstCard.locator('.team-projection-strip').innerText(),/105\.00\s*▲ 112\.50/,'team totals should show pregame and adjusted totals');
+  assert.equal((await firstCard.locator('.team-projection').first().innerText()).trim(),'105.00','pregame ESPN team totals should show the original projection');
+  assert.equal((await firstCard.locator('.team-projection').last().innerText()).trim(),'107.00','pregame ESPN opponent totals should show the original projection');
+  const yahooCard=page.locator('.dashboard-matchup-card').filter({hasText:'Test Yahoo League'}).first();
+  assert.equal((await yahooCard.locator('.team-projection').first().innerText()).trim(),'105.00','pregame Yahoo team totals should use the same projection behavior');
   assert.equal(await page.getByText('Proj',{exact:true}).count(),0,'projection values should not repeat a label');
   const unchanged=firstCard.locator('.lineup-position-row').filter({has:page.getByRole('button',{name:'Home Receiver',exact:true})}).locator('.projection-value').first();
   assert.equal((await unchanged.innerText()).trim(),'16.09','an unchanged projection should show only its value');
-  assert.equal(await firstCard.locator('.projection-up').count()>0,true,'rising projections should be marked green');
-  assert.equal(await firstCard.locator('.projection-down').count()>0,true,'falling projections should be marked red');
+  const quarterbackProjection=firstCard.locator('.lineup-position-row').filter({has:page.getByRole('button',{name:'Test Quarterback',exact:true})}).locator('.player-projection').first();
+  assert.equal((await quarterbackProjection.innerText()).trim(),'25.00','a player who has not started should show the original projection');
   assert.match(await firstCard.locator('.matchup-win-chance').innerText(),/61%/);
   assert.equal((await firstCard.locator('.matchup-win-chance').innerText()).trim(),'61%\n39%','win chance should show only the percentages');
   const lineupLabels=await firstCard.locator('.lineup-position-label').allTextContents();
@@ -220,12 +223,13 @@ try {
   assert.equal(new Set(cardHeights).size,1,'matchup cards should match the tallest card');
   const benchGaps=await page.locator('.dashboard-matchup-card').evaluateAll(cards=>cards.map(card=>{const rows=card.querySelectorAll('.lineup-position-row'),bench=card.querySelector('.lineup-bench');return bench&&rows.length?bench.getBoundingClientRect().top-rows[rows.length-1].getBoundingClientRect().bottom:null;}));
   assert.ok(benchGaps.every(gap=>gap!==null&&Math.abs(gap)<2),'each bench should follow its active lineup');
-  assert.equal(await page.getByRole('button',{name:'Refresh scores'}).count(),0,'live updates should run without a manual control');
+  assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'live updates should run without a manual control');
   assert.equal(await page.getByText('Add a league manually').count(),0);
   await page.getByRole('button',{name:'Test Quarterback'}).first().click();
   const playerDialog=page.getByRole('dialog',{name:'Test Quarterback'});
   await playerDialog.waitFor();
   await playerDialog.getByText('Passing yards').waitFor();
+  assert.equal(await playerDialog.getByRole('cell',{name:'10.00'}).count(),1,'player stats should show their fantasy-point contribution');
   await playerDialog.locator('.player-game-status').filter({hasText:/Sep 13.*(?:AM|PM)/}).waitFor();
   await page.screenshot({path:'test-results/player-modal.png'});
   await playerDialog.getByRole('button',{name:'Close player details'}).click();
@@ -325,8 +329,8 @@ try {
   await page.getByRole('heading',{name:'Test Sunday League'}).waitFor();
   assert.match(page.url(),/matchup=h5/,'selected matchup should be identified in the URL');
   assert.equal(await page.locator('.route-breadcrumb, .league-detail-heading .eyebrow, .league-detail-section .section-heading-row').count(),0,'league detail should omit redundant headings and breadcrumbs');
-  assert.match(await page.locator('.league-detail-updated .dashboard-live-status').innerText(),/^Updated \d{1,2}:\d{2}\s*(?:AM|PM)$/,'league update time should use the dashboard status format');
-  assert.ok(await page.locator('.league-detail-heading').evaluate(heading=>{const title=heading.querySelector('h1').getBoundingClientRect(),updated=heading.querySelector('time').getBoundingClientRect();return updated.left>title.right&&Math.abs((updated.top+updated.bottom-title.top-title.bottom)/2)<5;}),'update time should align with the league name on desktop');
+  assert.match(await page.locator('.league-detail-updated .dashboard-live-status').innerText(),/^Updated \w{3} \d{1,2}, \d{4}, \d{1,2}:\d{2}\s*(?:AM|PM)$/,'league update time should use the full dashboard status format');
+  assert.ok(await page.locator('.league-detail-heading').evaluate(heading=>{const title=heading.querySelector('.league-detail-title').getBoundingClientRect(),updated=heading.querySelector('time').getBoundingClientRect();return updated.left>title.right;}),'update time should sit to the right of the league title on desktop');
   const leagueGrid=page.locator('#league-matchup-grid');
   assert.equal(await leagueGrid.locator('.dashboard-matchup-card').count(),4,'league detail should show every game in the grid');
   assert.equal(await leagueGrid.locator('.matchup-card-league, .matchup-card-foot').count(),0,'league cards should omit repeated league names and player counts');
@@ -341,8 +345,7 @@ try {
   await leagueGrid.locator('.league-matchup-toggle').first().click();
   await leagueGrid.getByRole('button',{name:'Test Quarterback',exact:true}).waitFor();
   await leagueGrid.getByRole('button',{name:'Opponent Runner',exact:true}).waitFor();
-  assert.equal(await leagueGrid.getByText('HOME LINEUP',{exact:true}).count(),1);
-  assert.equal(await leagueGrid.getByText('AWAY LINEUP',{exact:true}).count(),1);
+  assert.equal(await leagueGrid.getByText(/^(?:HOME|AWAY) LINEUP$/).count(),0,'expanded matchups should omit redundant lineup headings');
   await leagueGrid.locator('.dashboard-matchup-card').filter({hasText:'Home 5'}).locator('.league-matchup-toggle').click();
   assert.match(await leagueGrid.locator('.dashboard-matchup-card').first().innerText(),/Home 5/,'opening another game should swap the expanded tile');
   assert.equal(await leagueGrid.locator('.dashboard-matchup-card.is-selected').count(),1,'only one game should be expanded');
@@ -380,7 +383,7 @@ try {
   await failedLiveCheck;
   await page.waitForTimeout(100);
   assert.equal(await liveStatus.innerText(),statusBeforeError,'a failed NFL check should keep the green live update status');
-  assert.equal(await page.getByRole('button',{name:'Refresh scores'}).count(),0,'a failed NFL check should not show manual refresh during a game');
+  assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'a failed NFL check should not show manual refresh during a game');
   assert.deepEqual(errors,[]);
   console.log('UI smoke passed: homepage, sign-in, scores, league browsing, player modal, live refresh, settings, and connector flow. Screenshots: test-results/.');
 } catch (error) {

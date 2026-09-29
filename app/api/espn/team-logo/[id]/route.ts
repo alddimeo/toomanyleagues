@@ -27,7 +27,14 @@ export async function GET(_request: Request, context: Context) {
       return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
     }
 
-    const image = await fetchEspnTeamLogo(espnAccess(user.id, state), savedId);
+    let credentials;
+    try {
+      credentials = espnAccess(user.id, state);
+    } catch (error) {
+      console.error('ESPN team logo credential decryption failure', error instanceof Error ? error.name : 'unknown');
+      throw error;
+    }
+    const image = await fetchEspnTeamLogo(credentials, savedId);
     return new Response(new Uint8Array(image.bytes), {
       headers: {
         'Cache-Control': 'private, max-age=300',

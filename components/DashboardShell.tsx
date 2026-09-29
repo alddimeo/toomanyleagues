@@ -56,6 +56,13 @@ function providerInitial(provider: Provider) {
   return provider === "espn" ? "E" : "Y!";
 }
 
+function latestRefreshAt(leagues: LeagueSnapshot[]) {
+  return leagues.reduce<string | null>((latest, league) => {
+    const fetchedAt = Date.parse(league.fetchedAt);
+    return Number.isFinite(fetchedAt) && (!latest || fetchedAt > Date.parse(latest)) ? league.fetchedAt : latest;
+  }, null);
+}
+
 function safeRetryAfter(response: Response) {
   const seconds = Number(response.headers.get("Retry-After"));
   return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1000) : 4000;
@@ -96,6 +103,7 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
   const [picker, setPicker] = useState<LeaguePickerState | null>(null);
   const [importing, setImporting] = useState(false);
   const [discovering, setDiscovering] = useState<Provider | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const refreshInFlight = useRef(false);
   const pollingPaused = useRef(false);
 
@@ -143,10 +151,13 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
   const refreshDashboard = useCallback(async () => {
     if (refreshInFlight.current || document.visibilityState !== "visible") return LIVE_INTERVAL_MS;
     refreshInFlight.current = true;
+    setRefreshing(true);
     setLiveState("Updating scores…");
     try {
       const response = await fetch("/api/refresh", {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
         credentials: "same-origin",
         cache: "no-store",
       });
@@ -185,6 +196,7 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
       return LIVE_INTERVAL_MS;
     } finally {
       refreshInFlight.current = false;
+      setRefreshing(false);
     }
   }, [liveGames, loadDashboard, routeToLogin, setDashboard]);
 
@@ -337,6 +349,7 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
   if (loading && !data) return <LoadingDashboard />;
   if (loadError && !data) return <DashboardError message={loadError} onRetry={() => void loadDashboard()} />;
   if (!data) return <DashboardError message="Your dashboard data is unavailable. Please sign in again." onRetry={() => void loadDashboard()} />;
+  const lastRefreshedAt = latestRefreshAt(data.leagues);
 
   return (
     <div className="dashboard-shell">
@@ -354,14 +367,14 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
         <div className="dashboard-content">
           <header className="dashboard-heading">
             <div><h1>{focus === "overview" ? "Matchups" : focus === "leagues" ? "Leagues" : focus === "settings" ? "Settings" : "Help"}</h1></div>
-            {scoresPage ? <div className="dashboard-heading-actions">{liveGames !== false ? <span className={`dashboard-live-status${liveState === "Updates paused" ? " is-paused" : ""}`} role="status"><b className="status-dot" /> {liveState}</span> : <><span className="dashboard-refresh-help">Automatic updates run while NFL games are live.</span><button className="button button-small button-outline" type="button" onClick={() => void refreshDashboard()}>Refresh scores</button></>}</div> : null}
+            {scoresPage ? <div className="dashboard-heading-actions">{liveGames !== false ? <span className={`dashboard-live-status${liveState === "Updates paused" ? " is-paused" : ""}`} role="status"><b className={refreshing ? "refresh-spinner" : "status-dot"} aria-hidden="true" /> {liveState}</span> : <div className="dashboard-refresh-controls"><div className="dashboard-refresh-row">{lastRefreshedAt ? <time className="dashboard-refresh-time" dateTime={lastRefreshedAt}>Last refreshed {new Date(lastRefreshedAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</time> : null}<button className="button button-small button-outline" type="button" onClick={() => void refreshDashboard()} disabled={refreshing} aria-busy={refreshing}>Refresh Lineups{refreshing ? <span className="refresh-spinner" aria-hidden="true" /> : null}</button></div><span className="dashboard-refresh-help">Automatic updates run while NFL games are live.</span></div>}</div> : null}
           </header>
 
           {notice && !extensionPending && !picker ? <div className={`dashboard-notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i"}</span>{notice.text}<button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div> : null}
 
           {focus === "overview" ? <div className="dashboard-game-layout"><section className="dashboard-matchups" aria-label="League matchups"><MatchupGrid leagues={data.leagues} personalOnly /></section></div> : focus === "leagues" ? <LeagueScores leagues={data.leagues} /> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
             <details open><summary>What is the smaller number beneath a score?</summary><p>It is the latest fantasy point projection supplied by your connected provider. A dash means that provider has not supplied one.</p></details>
-            <details><summary>What do the green and red changes mean?</summary><p>Green means the current projection is higher than the saved pregame projection; red means it is lower. Player numbers show the point change. Team totals show the adjusted projection.</p></details>
+            <details><summary>What do the green and red changes mean?</summary><p>While a player or team is active, green with an up arrow means the current projection is higher than the saved pregame projection; red with a down arrow means it is lower. The number is always the current total projection.</p></details>
             <details><summary>Why is there no colored change for my league?</summary><p>We can save a pregame comparison only when a league is connected and projections are available before the first NFL game of the week starts. Leagues connected later still show available live projections, without a comparison for that week.</p></details>
             <details><summary>Why is win chance missing?</summary><p>Win chance appears only when your fantasy provider supplies a matchup percentage. We do not calculate our own odds.</p></details>
           </section> : <section className="connection-area" aria-labelledby="connections-title">

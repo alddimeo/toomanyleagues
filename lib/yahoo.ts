@@ -2,9 +2,9 @@ import { AppError } from './security';
 import { nflTeamLogoUrl, normalizeNflTeam } from './nfl';
 import type { LeagueSnapshot, Player, Team } from './types';
 import { withTeamProjection } from './projections';
-import { DomUtils, parseDocument } from 'htmlparser2';
 
 const YAHOO_API_URL = 'https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2';
+const YAHOO_REDZONE_URL = 'https://pub-api.fantasysports.yahoo.com/fantasy/v3/redzone/nfl';
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export type YahooCredentials = { Y: string; T: string };
@@ -296,6 +296,19 @@ function statLabels(payload: unknown): Map<string, string> {
   return labels;
 }
 
+function statPointModifiers(payload: unknown, labels: Map<string, string>): Map<string, number> {
+  const modifiers = new Map<string, number>();
+  for (const group of findResources(payload, 'stat_modifiers')) {
+    for (const stat of findResources(group, 'stat')) {
+      const id = textField(stat, 'stat_id', 'id');
+      const value = numberField(stat, 'value', 'modifier');
+      const label = id && labels.get(id);
+      if (label && value !== null) modifiers.set(label, value);
+    }
+  }
+  return modifiers;
+}
+
 function parsePlayer(record: JsonObject, labels: Map<string, string>): Player | null {
   const id = textField(record, 'player_key', 'player_id');
   if (!id) return null;
@@ -402,49 +415,43 @@ function mergeTeamValues(values: Team[]): Team[] {
   return [...teams.values()].map(withTeamProjection);
 }
 
-export function parseYahooRosterProjections(html: string): Map<string, number> {
-  const projections = new Map<string, number>();
-  const document = parseDocument(html);
-  const tables = DomUtils.findAll((node) => node.name === 'table', document.children);
-  for (const table of tables) {
-    const headers = DomUtils.findAll((node) => node.name === 'tr' &&
-      node.children.some((child) => child.type === 'tag' && child.name === 'th' && DomUtils.textContent(child).trim() === 'Proj Pts'), table.children);
-    if (!headers.length) continue;
-    const headerCells = headers[0].children.filter((child) => child.type === 'tag' && child.name === 'th');
-    const column = headerCells.findIndex((child) => DomUtils.textContent(child).trim() === 'Proj Pts');
-    if (column < 0) continue;
-    for (const row of DomUtils.findAll((node) => node.name === 'tr', table.children)) {
-      const cells = row.children.filter((child) => child.type === 'tag' && child.name === 'td');
-      const projectionCell = cells[column + Math.max(0, cells.length - headerCells.length)];
-      const player = projectionCell ? DomUtils.findOne((node) => !!node.attribs?.['data-ys-playerid'], cells) : null;
-      const id = player?.attribs['data-ys-playerid'];
-      const value = projectionCell && DomUtils.textContent(projectionCell).trim();
-      if (!id || !/^\d{1,12}$/.test(id) || !value || !/^\d+(?:\.\d+)?$/.test(value)) continue;
-      const projection = Number(value);
-      if (Number.isFinite(projection) && projection <= 500) projections.set(id, projection);
+type YahooLiveProjection = { projection?: number; players: Map<string, number> };
+
+export function parseYahooRedzoneProjections(payload: unknown): Map<string, YahooLiveProjection> {
+  const result = new Map<string, YahooLiveProjection>();
+  const service = firstField(payload, 'service') ?? payload;
+  const leagues = firstField(service, 'leagues');
+  if (!isObject(leagues)) return result;
+  for (const league of Object.values(leagues)) {
+    const teams = firstField(league, 'teams');
+    if (!isObject(teams)) continue;
+    for (const [teamKey, value] of Object.entries(teams)) {
+      if (!isObject(value)) continue;
+      const id = textField(value, 'id') ?? teamKey;
+      const players = new Map<string, number>();
+      const roster = firstField(value, 'players');
+      if (Array.isArray(roster)) for (const player of roster) {
+        const playerId = textField(player, 'id');
+        const projection = numberField(player, 'projectedPoints');
+        if (playerId && projection !== null) players.set(playerId, projection);
+      }
+      const projection = numberField(value, 'projectedPoints');
+      result.set(id, { ...(projection !== null ? { projection } : {}), players });
     }
   }
-  return projections;
+  return result;
 }
 
-async function yahooRosterPage(credentials: YahooCredentials, leagueId: string, teamId: string, season: number, week: number): Promise<Map<string, number>> {
-  const teamNumber = teamId.match(new RegExp(`^${leagueId.replaceAll('.', '\\.')}\\.t\\.(\\d{1,12})$`))?.[1];
-  if (!teamNumber) return new Map();
-  const leagueNumber = leagueId.split('.').at(-1);
-  const prefix = season === new Date().getFullYear() ? '' : `${season}/`;
-  const url = `https://football.fantasysports.yahoo.com/${prefix}f1/${leagueNumber}/${teamNumber}?stat1=GDD&stat2=M&week=${week}`;
-  const init = browserCookies(credentials);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { ...init, headers: { ...init.headers, accept: 'text/html' }, signal: controller.signal });
-    if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) return new Map();
-    return parseYahooRosterProjections(await response.text());
-  } catch {
-    return new Map();
-  } finally {
-    clearTimeout(timer);
-  }
+function yahooDefenseInitialPoints(payload: unknown): number {
+  const leagues = firstField(firstField(payload, 'service') ?? payload, 'leagues');
+  if (!isObject(leagues)) return 0;
+  const league = Object.values(leagues)[0];
+  const stats = firstField(league, 'stats');
+  if (!Array.isArray(stats)) return 0;
+  return stats.reduce((total, stat) => {
+    const id = textField(stat, 'id');
+    return id === '50' || id === '71' ? total + (numberField(stat, 'modifier') ?? 0) : total;
+  }, 0);
 }
 
 function parseMatchups(payload: unknown, labels = new Map<string, string>()): { matchups: LeagueSnapshot['matchups']; week: number | null; teams: Team[] } {
@@ -485,6 +492,7 @@ export function parseYahooLeagueSnapshot(
   const leagueRecords = findResources(payload, 'league');
   const league = leagueRecords.find((item) => textField(item, 'name')) ?? leagueRecords[0] ?? {};
   const labels = statLabels(payload);
+  const modifiers = statPointModifiers(payload, labels);
   const scoreboard = parseMatchups(scoreboardPayload ?? payload, labels);
   const teams = mergeTeams(findResources(payload, 'team'), labels);
   const mergedTeams = mergeTeamValues([...scoreboard.teams, ...teams]);
@@ -500,7 +508,14 @@ export function parseYahooLeagueSnapshot(
     season: asInteger(firstField(league, 'season')) ?? season,
     week,
     fetchedAt: new Date().toISOString(),
-    teams: mergedTeams.map(withTeamProjection),
+    teams: mergedTeams.map((team) => withTeamProjection(modifiers.size ? { ...team, players: team.players.map((player) => ({
+      ...player,
+      statPoints: Object.fromEntries(Object.entries(player.stats).flatMap(([label, value]) => {
+        const amount = asNumber(value);
+        const modifier = modifiers.get(label);
+        return amount !== null && modifier !== undefined ? [[label, amount * modifier]] : [];
+      })),
+    })) } : team)),
     matchups: scoreboard.matchups,
   };
 }
@@ -523,6 +538,7 @@ export async function fetchYahooLeague(
   leagueId: string,
   season: number,
   previous?: LeagueSnapshot,
+  projectionTeamIds?: string[],
 ): Promise<LeagueSnapshot> {
   const key = leagueKey(leagueId);
   if (!Number.isInteger(season) || season < 2000 || season > 2100) {
@@ -553,23 +569,38 @@ export async function fetchYahooLeague(
   ]);
   const snapshot = parseYahooLeagueSnapshot({ metadata, roster }, key, season, scoreboard);
   if (!snapshot.teams.length) throw new AppError('Invalid Yahoo league response', 502);
-  const providerProjections = new Set(snapshot.teams.flatMap((team) => team.players.filter((player) => player.projection !== undefined).map((player) => player.id)));
   if (previous?.week === week && previous.season === season && previous.id === key) {
+    const savedTeams = new Map(previous.teams.map((team) => [team.id, team.projection] as const));
     const saved = new Map(previous.teams.flatMap((team) => team.players.map((player) => [player.id, player.projection] as const)));
-    snapshot.teams = snapshot.teams.map((team) => ({ ...team, players: team.players.map((player) => ({
+    snapshot.teams = snapshot.teams.map((team) => ({ ...team,
+      ...(savedTeams.get(team.id) !== undefined ? { projection: savedTeams.get(team.id) } : {}), players: team.players.map((player) => ({
       ...player,
-      ...(player.projection === undefined && saved.get(player.id) !== undefined ? { projection: saved.get(player.id) } : {}),
+      ...(saved.get(player.id) !== undefined ? { projection: saved.get(player.id) } : {}),
     })) }));
   }
-  // ponytail: one roster page per refresh; a full league takes one refresh per team.
-  const index = (previous?.week === week && previous.season === season && previous.id === key ? previous.yahooProjectionCursor ?? 0 : 0) % snapshot.teams.length;
-  const team = snapshot.teams[index];
-  const projections = await yahooRosterPage(credentials, key, team.id, season, week);
-  team.players = team.players.map((player) => {
-    const projection = projections.get(player.id.split('.').at(-1)!);
-    return projection === undefined || providerProjections.has(player.id) ? player : { ...player, projection };
-  });
-  snapshot.yahooProjectionCursor = (index + 1) % snapshot.teams.length;
-  snapshot.yahooProjectionsAt = new Date().toISOString();
+  const userTeam = snapshot.teams.find((team) => team.isUserTeam);
+  const userMatchup = userTeam && snapshot.matchups.find((item) => item.home === userTeam.id || item.away === userTeam.id);
+  const selectedIds = projectionTeamIds ?? (userTeam ? [userTeam.id, userMatchup?.home === userTeam.id ? userMatchup.away : userMatchup?.home].filter((id): id is string => Boolean(id)) : []);
+  const selectedTeams = [...new Set(selectedIds)].slice(0, 2).flatMap((teamId) => snapshot.teams.filter((team) => team.id === teamId));
+  let live: Map<string, YahooLiveProjection> | undefined;
+  if (selectedTeams.length) {
+    const payload = await jsonRequest(
+      `${YAHOO_REDZONE_URL}?league_id=${key.split('.').at(-1)}&format=json&player_image_type=17`,
+      browserCookies(credentials),
+    ).catch(() => undefined);
+    if (payload) {
+      live = parseYahooRedzoneProjections(payload);
+      snapshot.yahooDefenseInitialPoints = yahooDefenseInitialPoints(payload);
+    }
+  }
+  for (const team of live ? snapshot.teams : []) {
+    const values = live?.get(team.id.split('.').at(-1)!);
+    team.players = team.players.map((player) => {
+      const projection = values?.players.get(player.id.split('.').at(-1)!);
+      return projection === undefined ? player : { ...player, projection };
+    });
+    if (values?.projection !== undefined) team.projection = values.projection;
+  }
+  if (selectedIds.length && live?.size) snapshot.yahooProjectionsAt = new Date().toISOString();
   return snapshot;
 }

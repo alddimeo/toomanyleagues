@@ -8,7 +8,9 @@ const season = 2025;
 function responseFixture(): any {
   return {
     id: 123,
-    settings: { name: 'Sunday League' },
+    settings: { name: 'Sunday League', scoringSettings: { scoringItems: [
+      { statId: 3, points: 0.04 }, { statId: 4, points: 4 },
+    ] } },
     status: { currentMatchupPeriod: 3, latestScoringPeriod: 5 },
     teams: [
       {
@@ -74,6 +76,7 @@ test('parser maps current matchup, league points, roster points, and weekly stat
   assert.equal(snapshot.teams[0].players[0].position, 'QB');
   assert.equal(snapshot.teams[0].players[0].slot, 'QB');
   assert.deepEqual(snapshot.teams[0].players[0].stats, { 'Passing yards': 300, 'Passing touchdowns': 2 });
+  assert.deepEqual(snapshot.teams[0].players[0].statPoints, { 'Passing yards': 12, 'Passing touchdowns': 8 });
   assert.equal(snapshot.teams[1].points, null);
 });
 
@@ -90,7 +93,7 @@ test('parser reads current ESPN projected points and matchup win chance', () => 
   assert.equal(snapshot.matchups[0].homeWinProbability, 64);
 });
 
-test('ESPN uses its weekly player and matchup team projections', () => {
+test('ESPN uses weekly player projections and sums the active starters', () => {
   const value = responseFixture();
   value.teams[0].roster.entries[0].playerPoolEntry.projectedPoints = 10.27;
   value.teams[0].roster.entries[0].playerPoolEntry.player.stats = [
@@ -100,7 +103,7 @@ test('ESPN uses its weekly player and matchup team projections', () => {
   value.schedule[1].home.totalProjectedPoints = 113.6;
   const snapshot = parseEspnLeague(value, '123', season);
   assert.equal(snapshot.teams[0].players[0].projection, 7.19);
-  assert.equal(snapshot.teams[0].projection, 113.6);
+  assert.equal(snapshot.teams[0].projection, 7.19);
 });
 
 test('parser maps league and nested ESPN team logos', () => {
@@ -166,6 +169,7 @@ test('ESPN logo fetch is fixed-host, authenticated, and validates image response
     assert.equal(image.contentType, 'image/jpeg');
     assert.equal(new URL(url).origin, 'https://mystique-api.fantasy.espn.com');
     assert.equal(new URL(url).pathname, `/apis/v1/domains/lm/images/${id}`);
+    assert.equal((init?.headers as Record<string, string>).Accept, '*/*');
     assert.equal((init?.headers as Record<string, string>).Cookie, 'espn_s2=s2-token; SWID={user-id}');
     assert.equal(init?.redirect, 'manual');
     assert.equal(init?.cache, 'no-store');

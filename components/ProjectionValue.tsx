@@ -1,14 +1,12 @@
-export function ProjectionValue({ value, baseline, teamTotal = false, held = false }: { value?: number; baseline?: number; teamTotal?: boolean; held?: boolean }) {
-  const visible = held && baseline !== undefined ? baseline : value;
-  const current = typeof visible === 'number' && Number.isFinite(visible) ? visible : null;
-  const pregame = typeof baseline === 'number' && Number.isFinite(baseline) ? baseline : null;
-  const change = current !== null && pregame !== null ? Math.round((current - pregame) * 100) / 100 : null;
-  const adjusted = current?.toFixed(2) ?? '—';
-  return <span className="projection-value" title={held ? "Pregame projection until kickoff" : teamTotal ? "Pregame and adjusted team projections" : "Projected fantasy points"}>
-    <span>{teamTotal && current !== null && pregame !== null ? pregame.toFixed(2) : adjusted}</span>
-    {change !== null && change !== 0 ? <span className={change > 0 ? 'projection-up' : 'projection-down'}
-      aria-label={teamTotal ? `Adjusted projected total ${adjusted}, ${change > 0 ? 'up' : 'down'} ${Math.abs(change).toFixed(2)} from pregame` : `${change > 0 ? 'Up' : 'Down'} ${Math.abs(change).toFixed(2)} from pregame projection`}>
-      {change > 0 ? '▲' : '▼'} {teamTotal ? adjusted : Math.abs(change).toFixed(2)}
-    </span> : null}
+import type { NflGame } from "@/lib/nfl";
+import { projectionPresentation } from "@/lib/projections";
+
+export function ProjectionValue({ value, baseline, teamTotal = false, state }: { value?: number; baseline?: number; teamTotal?: boolean; state?: NflGame['state'] | 'bye' }) {
+  const projection = projectionPresentation(value, baseline, state);
+  const direction = projection.direction;
+  return <span className={`projection-value ${teamTotal ? 'team-projection' : 'player-projection'}${direction > 0 ? ' projection-up' : direction < 0 ? ' projection-down' : ''}`}
+    title={state === 'live' ? `Current ${teamTotal ? 'team ' : ''}projected fantasy points` : `Pregame ${teamTotal ? 'team ' : ''}projected fantasy points`}
+    aria-label={direction ? `${direction > 0 ? 'Up' : 'Down'} from pregame projection: ${projection.value?.toFixed(2)}` : undefined}>
+    {direction ? <span aria-hidden="true">{direction > 0 ? '▲' : '▼'}</span> : null}{projection.value?.toFixed(2) ?? '—'}
   </span>;
 }

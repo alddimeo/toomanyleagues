@@ -30,18 +30,27 @@ const POSITION_ALIASES: Record<string, Record<string, string>> = {
   },
 };
 
-export function playerStatsWithDefaults(player: Pick<Player, 'position' | 'stats'>): Record<string, string | number> {
-  const rawPosition = player.position.trim().toUpperCase();
+function normalizedStats(positionValue: string, values: Record<string, string | number>, includeDefaults: boolean): Record<string, string | number> {
+  const rawPosition = positionValue.trim().toUpperCase();
   const position = ['D/ST', 'DST', 'DEF', 'DEFENSE'].includes(rawPosition)
     ? 'D/ST'
     : rawPosition.split(/[\/,]/)[0].trim();
   const defaults = POSITION_STATS[position] ?? [];
   const knownLabels = new Map(defaults.map((label) => [label.toLowerCase(), label] as const));
-  const stats: Record<string, string | number> = Object.fromEntries(defaults.map((label) => [label, 0]));
-  for (const [rawLabel, value] of Object.entries(player.stats ?? {})) {
+  const stats: Record<string, string | number> = includeDefaults ? Object.fromEntries(defaults.map((label) => [label, 0])) : {};
+  for (const [rawLabel, value] of Object.entries(values)) {
     const label = rawLabel.trim();
     const key = label.toLowerCase();
-    stats[POSITION_ALIASES[position]?.[key] ?? STAT_ALIASES[key] ?? knownLabels.get(key) ?? label] = value;
+    const normalized = POSITION_ALIASES[position]?.[key] ?? STAT_ALIASES[key] ?? knownLabels.get(key);
+    if (normalized) stats[normalized] = value;
   }
   return stats;
+}
+
+export function playerStatsWithDefaults(player: Pick<Player, 'position' | 'stats'>): Record<string, string | number> {
+  return normalizedStats(player.position, player.stats ?? {}, true);
+}
+
+export function playerStatPoints(player: Pick<Player, 'position' | 'statPoints'>): Record<string, number> {
+  return normalizedStats(player.position, player.statPoints ?? {}, false) as Record<string, number>;
 }

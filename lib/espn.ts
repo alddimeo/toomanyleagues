@@ -180,23 +180,36 @@ export async function fetchEspnTeamLogo(
   let response: Response;
   try {
     response = await fetch(new URL(`/apis/v1/domains/lm/images/${logoId}`, ESPN_IMAGE_API), {
-      headers: { Accept: 'image/*', Cookie: `espn_s2=${espnS2}; SWID=${swid}` },
+      headers: {
+        Accept: '*/*',
+        Cookie: `espn_s2=${espnS2}; SWID=${swid}`,
+        Referer: 'https://fantasy.espn.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
       cache: 'no-store',
       redirect: 'manual',
       signal: timeoutSignal(),
     });
-  } catch {
+  } catch (error) {
+    console.error('ESPN team logo network failure', error instanceof Error ? error.name : 'unknown');
     throw new AppError('ESPN team logo is unavailable right now.', 502);
   }
   if (response.status === 401) throw new AppError('ESPN authentication expired. Reconnect your ESPN account.', 401);
-  if (!response.ok) throw new AppError('ESPN team logo is unavailable right now.', 502);
+  if (!response.ok) {
+    console.error('ESPN team logo upstream status', response.status, response.headers.get('Content-Type') || 'missing content type');
+    throw new AppError('ESPN team logo is unavailable right now.', 502);
+  }
   const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase();
   if (!contentType || !['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'].includes(contentType)) {
+    console.error('ESPN team logo invalid content type', contentType || 'missing');
     await response.body?.cancel().catch(() => undefined);
     throw new AppError('ESPN returned an invalid team logo.', 502);
   }
   const bytes = await readTeamLogo(response);
-  if (!validImage(contentType, bytes)) throw new AppError('ESPN returned an invalid team logo.', 502);
+  if (!validImage(contentType, bytes)) {
+    console.error('ESPN team logo invalid image signature', contentType, bytes.byteLength);
+    throw new AppError('ESPN returned an invalid team logo.', 502);
+  }
   return { bytes, contentType: contentType === 'image/jpg' ? 'image/jpeg' : contentType };
 }
 
@@ -316,6 +329,15 @@ function copyStats(target: Record<string, string | number>, value: unknown): voi
   }
 }
 
+function statPointModifiers(data: JsonObject): Map<string, number> {
+  const scoring = object(object(data.settings)?.scoringSettings);
+  return new Map(array(scoring?.scoringItems).flatMap((item) => {
+    const label = STAT_NAMES[integer(item.statId) ?? -1];
+    const points = number(item.points);
+    return label && points !== null ? [[label, points] as const] : [];
+  }));
+}
+
 function playerStats(entry: JsonObject, season: number, scoring: number, scoped: boolean): Record<string, string | number> {
   const result: Record<string, string | number> = {};
   if (!scoped) return result;
@@ -385,6 +407,7 @@ function player(entry: JsonObject, season: number, scoring: number, scoped: bool
     object(playerData.proTeam)?.logo,
     inferredProTeamId && NFL_TEAM_NAMES[inferredProTeamId] ? `https://a.espncdn.com/i/teamlogos/nfl/500/${inferredProTeamId}.png` : undefined,
   );
+  const injuryStatus = text(playerData.injuryStatus);
   return {
     id: playerId,
     name: fullName,
@@ -396,6 +419,7 @@ function player(entry: JsonObject, season: number, scoring: number, scoped: bool
     ...(headshot ? { headshot } : {}),
     ...(nflTeam ? { nflTeam } : {}),
     ...(nflTeamLogo ? { nflTeamLogo } : {}),
+    ...(injuryStatus ? { injuryStatus } : {}),
   };
 }
 
@@ -483,7 +507,6 @@ function teamSnapshot(team: JsonObject, side: JsonObject | undefined, season: nu
     logo: firstMediaUrl(team.logo, team.logoUrl, team.teamLogo, team.logos),
     ...(ownedBy(team, ownerId) ? { isUserTeam: true } : {}),
     points: teamPoints(side),
-    projection: firstNumber(side?.totalProjectedPoints, side?.projectedPoints, object(side?.rosterForCurrentScoringPeriod)?.projectedPoints) ?? undefined,
     players: entries.map((entry) => player(entry, season, scoring, liveById.has(entryPlayerId(entry) || '')))
       .filter((value): value is Player => !!value),
   });
@@ -510,10 +533,18 @@ export function parseEspnLeague(value: unknown, leagueId: string, season: number
   const week = currentWeek(data);
   const scoring = scoringPeriod(data);
   const sides = currentSides(data, week);
+  const modifiers = statPointModifiers(data);
   const teams = array(data.teams).map((team) => {
     const teamId = id(team.id);
     return teamSnapshot(team, teamId ? sides.get(teamId) : undefined, season, scoring, ownerId);
-  }).filter((team): team is Team => !!team);
+  }).filter((team): team is Team => !!team).map((team) => modifiers.size ? ({ ...team, players: team.players.map((player) => ({
+    ...player,
+    statPoints: Object.fromEntries(Object.entries(player.stats).flatMap(([label, value]) => {
+      const amount = number(value);
+      const modifier = modifiers.get(label);
+      return amount !== null && modifier !== undefined ? [[label, amount * modifier]] : [];
+    })),
+  })) }) : team);
   const settings = object(data.settings);
   return {
     id: id(data.id) || leagueId,

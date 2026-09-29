@@ -6,10 +6,20 @@ import type { Provider } from './types';
 import { espnTeamLogoProxyPath, fetchEspnLeague, type EspnLeagueOption } from './espn';
 import { fetchYahooLeague, type YahooCredentials } from './yahoo';
 import { fetchNflScoreboard } from './nfl';
-import { carryPregame, holdUpcomingYahooProjections } from './projections';
+import { applyEspnProviderProjections, applyYahooProviderProjections, carryPregame, holdUpcomingYahooProjections } from './projections';
 import type { LeagueSnapshot } from './types';
 
 export async function prepareLeagueSnapshot(fresh: LeagueSnapshot, old?: LeagueSnapshot): Promise<LeagueSnapshot> {
+  if (fresh.provider === 'espn') {
+    try { return applyEspnProviderProjections(fresh, await fetchNflScoreboard(fresh.season, fresh.week)); }
+    catch { return applyEspnProviderProjections(fresh, []); }
+  }
+  if (fresh.provider === 'yahoo' && fresh.yahooProjectionsAt) {
+    try {
+      const games = await fetchNflScoreboard(fresh.season, fresh.week);
+      return holdUpcomingYahooProjections(applyYahooProviderProjections(fresh, games), games);
+    } catch { return applyYahooProviderProjections(fresh, []); }
+  }
   if (old?.week === fresh.week && old.pregameClosed) return carryPregame(fresh, old);
   let beforeKickoff = false;
   try {
@@ -61,13 +71,13 @@ export async function importSelectedLeagues(owner:string,state:State,provider:Pr
   }
   return {imported,failed};
 }
-export async function fetchLeague(owner:string,state:State,provider:Provider,id:string,season:number,yahooCredentials?:YahooCredentials,previous?:LeagueSnapshot) {
+export async function fetchLeague(owner:string,state:State,provider:Provider,id:string,season:number,yahooCredentials?:YahooCredentials,previous?:LeagueSnapshot,yahooProjectionTeamIds?:string[]) {
   const connection = state.connections?.[provider];
   if(!connection) throw new AppError(`Connect ${provider === 'espn' ? 'ESPN' : 'Yahoo'} first.`);
   try {
     const snapshot = provider === 'espn'
       ? await fetchEspnLeague(espnAccess(owner,state),id,season)
-      : await fetchYahooLeague(yahooCredentials || yahooAccess(owner,state),id,season,previous);
+      : await fetchYahooLeague(yahooCredentials || yahooAccess(owner,state),id,season,previous,yahooProjectionTeamIds);
     connection.status='connected';
     return snapshot;
   } catch(error) {
