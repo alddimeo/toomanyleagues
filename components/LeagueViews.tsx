@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { LeagueSnapshot, Player, Team } from "@/lib/types";
-import { nflTeamLogoUrl } from "@/lib/nfl";
+import { nflTeamLogoUrl, normalizeNflTeam } from "@/lib/nfl";
 import { playerStatsWithDefaults } from "@/lib/player-stats";
 import { PlayerDetailsButton, PlayerGameStatus, PlayerProjection, TeamProjection } from "@/components/PlayerDetails";
 import { isBench } from "@/lib/projections";
+import { playerLiveKey, useMatchupLiveState, type MatchupLiveState } from "@/components/useMatchupLiveState";
 
 export function leagueHref(league: Pick<LeagueSnapshot, "provider" | "id" | "season">) {
   return `/dashboard/leagues/${league.provider}/${encodeURIComponent(league.id)}?season=${league.season}`;
@@ -125,11 +126,15 @@ function positionGroups(players: Player[]) {
   return POSITION_GROUPS.flatMap(({ key, label }) => grouped[key].length ? [{ key, label, players: grouped[key] }] : []);
 }
 
-function LineupPlayer({ player, league, away = false }: { player: Player; league: LeagueSnapshot; away?: boolean }) {
-  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-person"><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
+function LineupPlayer({ player, league, live, away = false }: { player: Player; league: LeagueSnapshot; live: MatchupLiveState; away?: boolean }) {
+  const teamState = normalizeNflTeam(player.nflTeam);
+  const fieldState = teamState ? live.teams[teamState] : undefined;
+  const flash = live.flashes[playerLiveKey(player.name)];
+  const status = flash ? "Scored" : fieldState === "redzone" ? "In the red zone" : fieldState === "field" ? "On the field" : null;
+  return <div key={flash ?? "steady"} className={`lineup-player${away ? " is-away" : ""}${fieldState ? ` is-${fieldState}` : ""}${flash ? " is-scored" : ""}`} data-live-state={flash ? "scored" : fieldState}><span className="lineup-player-person"><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} />{status ? <span className="live-player-status">{status}</span> : null}</span></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
 }
 
-function MatchupLineups({ league, userTeam, opponent, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; neutral?: boolean }) {
+function MatchupLineups({ league, userTeam, opponent, live, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; live: MatchupLiveState; neutral?: boolean }) {
   const homePlayers = userTeam?.players ?? [];
   const homeStarters = homePlayers.filter((player) => !isBench(player));
   const homeGroups = positionGroups(homeStarters.length ? homeStarters : homePlayers);
@@ -151,48 +156,49 @@ function MatchupLineups({ league, userTeam, opponent, neutral = false }: { leagu
       {opponent && !awayGroups.length ? <p>No players in this snapshot.</p> : <div />}
     </div> : null}
     {groups.flatMap(({ key, label, home, away }) => Array.from({ length: Math.max(home?.players.length ?? 0, away?.players.length ?? 0) }, (_, index) => <div className="lineup-position-row" key={`${key}-${index}`}>
-      <div className="lineup-position-cell">{home?.players[index] ? <LineupPlayer player={home.players[index]} league={league} /> : null}</div>
+      <div className="lineup-position-cell">{home?.players[index] ? <LineupPlayer player={home.players[index]} league={league} live={live} /> : null}</div>
       <div className="lineup-position-label">{label}</div>
-      <div className="lineup-position-cell">{away?.players[index] ? <LineupPlayer player={away.players[index]} league={league} away /> : null}</div>
+      <div className="lineup-position-cell">{away?.players[index] ? <LineupPlayer player={away.players[index]} league={league} live={live} away /> : null}</div>
     </div>))}
     {(homeBench.length || awayBench.length) ? <div className="lineup-bench">
       <div className="lineup-bench-grid">
-        <div className="lineup-players" role="group" aria-label={neutral ? "Home bench" : "Your bench"}>{positionGroups(homeBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} />)}</div>
+        <div className="lineup-players" role="group" aria-label={neutral ? "Home bench" : "Your bench"}>{positionGroups(homeBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} live={live} />)}</div>
         <div className="lineup-position-label">BE</div>
-        {opponent ? <div className="lineup-players" role="group" aria-label={neutral ? "Away bench" : "Opponent bench"}>{positionGroups(awayBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} away />)}</div> : null}
+        {opponent ? <div className="lineup-players" role="group" aria-label={neutral ? "Away bench" : "Opponent bench"}>{positionGroups(awayBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} live={live} away />)}</div> : null}
       </div>
     </div> : null}
   </div>;
 }
 
-function PersonalMatchupCard({ league, matchup, userTeam, opponent }: { league: LeagueSnapshot; matchup: LeagueSnapshot['matchups'][number]; userTeam: Team; opponent: Team | undefined }) {
+function PersonalMatchupCard({ league, matchup, userTeam, opponent, live }: { league: LeagueSnapshot; matchup: LeagueSnapshot['matchups'][number]; userTeam: Team; opponent: Team | undefined; live: MatchupLiveState }) {
   return <article className="matchup-card dashboard-matchup-card lineup-card">
     <LeagueBanner league={league} />
     <Scoreboard league={league} home={userTeam} away={opponent} homeWinProbability={matchup.homeWinProbability === undefined ? undefined : matchup.home === userTeam.id ? matchup.homeWinProbability : 100 - matchup.homeWinProbability} />
-    <MatchupLineups league={league} userTeam={userTeam} opponent={opponent} />
+    <MatchupLineups league={league} userTeam={userTeam} opponent={opponent} live={live} />
     <div className="matchup-card-foot"><span>{userTeam.players?.length ?? 0} user players</span><span>{opponent ? (opponent.players?.length ?? 0) + " opponent players" : "No opponent"}</span></div>
   </article>;
 }
-function MatchupCard({ league, matchup, personalOnly, open, onToggle }: { league: LeagueSnapshot; matchup: LeagueSnapshot["matchups"][number]; personalOnly: boolean; open: boolean; onToggle: () => void }) {
+function MatchupCard({ league, matchup, personalOnly, open, live, onToggle }: { league: LeagueSnapshot; matchup: LeagueSnapshot["matchups"][number]; personalOnly: boolean; open: boolean; live: MatchupLiveState; onToggle: () => void }) {
   const teamById = new Map(league.teams.map((team) => [team.id, team]));
   const home = teamById.get(matchup.home);
   const away = matchup.away ? teamById.get(matchup.away) : undefined;
   const userTeam = personalOnly ? league.teams.find((team) => team.isUserTeam) : undefined;
   if (userTeam) {
     const opponentId = matchup.home === userTeam.id ? matchup.away : matchup.home;
-    return <PersonalMatchupCard league={league} matchup={matchup} userTeam={userTeam} opponent={opponentId ? teamById.get(opponentId) : undefined} />;
+    return <PersonalMatchupCard league={league} matchup={matchup} userTeam={userTeam} opponent={opponentId ? teamById.get(opponentId) : undefined} live={live} />;
   }
   return <article className={`matchup-card dashboard-matchup-card${open ? " is-selected" : ""}`}>
     <button className="league-matchup-toggle" type="button" aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} players for ${home?.name ?? "Home team"} ${away ? `versus ${away.name}` : "bye"}`} onClick={onToggle}>
       <span className="matchup-card-top"><span>{open ? "HIDE PLAYERS −" : "SHOW PLAYERS +"}</span></span>
       <Scoreboard league={league} home={home} away={away} homeLabel="HOME" awayLabel="AWAY" homeWinProbability={matchup.homeWinProbability} linkTeams={false} />
     </button>
-    {open ? <MatchupLineups league={league} userTeam={home} opponent={away} neutral /> : null}
+    {open ? <MatchupLineups league={league} userTeam={home} opponent={away} live={live} neutral /> : null}
   </article>;
 }
 
 export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, layout = "rail", onMatchupChange }: { leagues: LeagueSnapshot[]; personalOnly?: boolean; initialMatchup?: string; layout?: "rail" | "grid"; onMatchupChange?: (leagueId: string, teamIds: string[]) => void }) {
   const [openMatchup, setOpenMatchup] = useState<string | null>(initialMatchup ?? null);
+  const live = useMatchupLiveState(leagues);
   useEffect(() => { setOpenMatchup(initialMatchup ?? null); }, [initialMatchup]);
   const cards = leagues.flatMap((league) => {
     const userTeam = personalOnly ? league.teams.find((team) => team.isUserTeam) : undefined;
@@ -234,7 +240,7 @@ export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, lay
   if (!cards.length) return <div className="empty-inline"><span>◌</span><div><strong>{personalOnly ? "No personal matchup snapshots yet" : "No league matchups yet"}</strong><p>{personalOnly ? "Connect or import leagues in Settings to load your current matchup." : "Connect a source in Settings to add leagues and see this week’s scores."}</p><Link className="text-link" href="/dashboard/settings">Open Settings</Link></div></div>;
 
   const orderedCards = openMatchup && layout === "grid" ? [...cards].sort((a, b) => Number(b.matchup.home === openMatchup) - Number(a.matchup.home === openMatchup)) : cards;
-  const matchupCards = orderedCards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} personalOnly={personalOnly} open={!personalOnly && openMatchup === matchup.home} onToggle={() => {
+  const matchupCards = orderedCards.map(({ league, matchup, index }) => <MatchupCard key={[league.provider, league.id, league.season, matchup.home, matchup.away ?? "bye", index].join("-")} league={league} matchup={matchup} personalOnly={personalOnly} open={!personalOnly && openMatchup === matchup.home} live={live} onToggle={() => {
     const opening=openMatchup!==matchup.home;
     onMatchupChange?.(league.id, opening ? [matchup.home, matchup.away].filter((id): id is string => Boolean(id)) : []);
     setOpenMatchup(opening ? matchup.home : null);

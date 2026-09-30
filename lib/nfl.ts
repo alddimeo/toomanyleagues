@@ -12,7 +12,10 @@ export type NflGame = {
   clock: string | null;
 };
 
-export type NflPlay = { id: string; text: string; timestamp: string | null; period: number | null; clock: string | null };
+export type NflPlay = { id: string; text: string; timestamp: string | null; period: number | null; clock: string | null; scoring?: boolean };
+export type NflLiveSituation = { possessionTeam: string | null; redZone: boolean; scoringPlays: NflPlay[] };
+
+const NFL_TIME_ZONE = 'America/New_York';
 
 const TEAM_NAMES: Record<string, string> = {
   ARI: 'CARDINALS', ATL: 'FALCONS', BAL: 'RAVENS', BUF: 'BILLS', CAR: 'PANTHERS',
@@ -57,6 +60,23 @@ export function normalizeNflTeam(value: string | undefined): string | null {
 export function nflTeamLogoUrl(value: string | undefined): string | undefined {
   const team = normalizeNflTeam(value);
   return team ? `/nfl/${team}.png` : undefined;
+}
+
+export function nflSlateKey(now = new Date()): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: NFL_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now).map(({ type, value }) => [type, value]));
+  const date = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+  date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 5) % 7);
+  return date.toISOString().slice(0, 10);
+}
+
+export function nflSlateDateRange(now = new Date()): string {
+  const key = nflSlateKey(now);
+  const start = new Date(`${key}T00:00:00Z`);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  return `${key.replaceAll('-', '')}-${end.toISOString().slice(0, 10).replaceAll('-', '')}`;
 }
 
 export function parseNflScoreboard(value: unknown): NflGame[] {
@@ -107,6 +127,8 @@ export async function fetchNflScoreboard(season?: number, week?: number): Promis
     url.searchParams.set('dates', String(season));
     url.searchParams.set('week', String(postseason ? week - 18 : week));
     url.searchParams.set('seasontype', postseason ? '3' : '2');
+  } else {
+    url.searchParams.set('dates', nflSlateDateRange());
   }
 
   let response: Response;
@@ -140,6 +162,32 @@ export function parseNflPlays(value: unknown): NflPlay[] {
       timestamp: timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : null,
       period: period === null ? null : Math.trunc(period),
       clock: text(object(play.clock)?.displayValue),
+      ...(play.scoringPlay === true || (numeric(play.scoreValue) ?? 0) > 0 ? { scoring: true } : {}),
     }];
   }).reverse();
+}
+
+export function parseNflLiveSituation(value: unknown): NflLiveSituation {
+  const root = object(value);
+  const header = object(root?.header) || object(array(root?.header)[0]);
+  const competition = object(array(header?.competitions)[0]);
+  const situation = object(competition?.situation);
+  const currentDrive = object(object(root?.drives)?.current);
+  const teams = array(competition?.competitors).map(object).filter((team): team is Record<string, unknown> => !!team);
+  const possessionId = text(situation?.possession);
+  const possession = teams.find((team) => text(object(team.team)?.id) === possessionId);
+  const driveTeam = object(currentDrive?.team);
+  const possessionTeam = normalizeNflTeam(
+    text(object(possession?.team)?.abbreviation) ||
+    text(object(possession?.team)?.displayName) ||
+    text(driveTeam?.abbreviation) ||
+    text(driveTeam?.displayName) ||
+    '',
+  );
+  const yardsToEndzone = numeric(object(currentDrive?.end)?.yardsToEndzone) ?? numeric(object(currentDrive?.start)?.yardsToEndzone);
+  return {
+    possessionTeam,
+    redZone: possessionTeam !== null && (situation?.isRedZone === true || currentDrive?.isRedZone === true || (yardsToEndzone !== null && yardsToEndzone <= 20)),
+    scoringPlays: parseNflPlays(value).filter((play) => play.scoring),
+  };
 }

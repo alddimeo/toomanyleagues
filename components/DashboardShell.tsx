@@ -11,6 +11,7 @@ import { NflPanel } from "@/components/NflPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { useLiveNflGames } from "@/components/useLiveNflGames";
 import { exposurePerformance, featuredPlayerExposure, filterPersonalMatchups, personalMatchups, playerExposure, sortPersonalMatchups, type ExposureMode, type MatchupFilter } from "@/lib/game-center";
+import { nflSlateKey } from "@/lib/nfl";
 
 type Connection = { provider: Provider; status: string };
 type DashboardData = {
@@ -109,6 +110,8 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
   const [refreshing, setRefreshing] = useState(false);
   const refreshInFlight = useRef(false);
   const pollingPaused = useRef(false);
+  const rolloverAttempted = useRef<string | null>(null);
+  const [slateKey, setSlateKey] = useState(() => nflSlateKey());
 
   const routeToLogin = useCallback(() => {
     router.replace("/login");
@@ -202,6 +205,25 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
       setRefreshing(false);
     }
   }, [liveGames, loadDashboard, routeToLogin, setDashboard]);
+
+  useEffect(() => {
+    const update = () => setSlateKey(nflSlateKey());
+    const timer = setInterval(update, 60_000);
+    document.addEventListener("visibilitychange", update);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", update); };
+  }, []);
+
+  useEffect(() => {
+    if (!data?.leagues.length || rolloverAttempted.current === slateKey) return;
+    const latestSeason = Math.max(...data.leagues.map((league) => league.season));
+    const stale = data.leagues.some((league) => {
+      const fetchedAt = Date.parse(league.fetchedAt);
+      return league.season === latestSeason && (!Number.isFinite(fetchedAt) || nflSlateKey(new Date(fetchedAt)) !== slateKey);
+    });
+    if (!stale) return;
+    rolloverAttempted.current = slateKey;
+    void refreshDashboard();
+  }, [data, refreshDashboard, slateKey]);
 
   useEffect(() => {
     if (!scoresPage || loading || !hasData || !liveGames) return;
@@ -411,6 +433,7 @@ function GameCenter({ leagues }: { leagues: LeagueSnapshot[] }) {
   const allExposure = playerExposure(currentLeagues);
   const exposure = featuredPlayerExposure(allExposure, exposureMode);
   const currentWeek = currentLeagues.reduce((latest, league) => Math.max(latest, league.week), 0);
+  useEffect(() => setExposureMode('starts'), [currentWeek]);
   const counts = {
     all: currentMatchups.length,
     close: filterPersonalMatchups(currentMatchups, 'close').length,

@@ -13,7 +13,7 @@ const fixture={user:{email:'tester@example.com'},connections:[{provider:'espn',s
   teams:[
     {id:'1',name:'Test Home',isUserTeam:true,logo:'/api/espn/team-logo/123e4567-e89b-12d3-a456-426614174000',points:101.25,projection:112.5,pregameProjection:105,players:[
       {id:'p1',name:'Test Quarterback',position:'QB',slot:'QB',nflTeam:'KC',headshot:'https://cdn.example/player.png',points:24.5,projection:28.5,pregameProjection:25,stats:{'Passing yards':250},statPoints:{'Passing yards':10}},
-      {id:'pwr1',name:'Home Receiver',position:'WR',slot:'WR',points:10.2,projection:16.09,pregameProjection:16.09},
+      {id:'pwr1',name:'Home Receiver',position:'WR',slot:'WR',nflTeam:'KC',points:10.2,projection:16.09,pregameProjection:16.09},
       {id:'pwr1b',name:'Home Receiver Two',position:'WR',slot:'WR',points:8.2},
       {id:'pk1',name:'Home Kicker',position:'K',slot:'K',points:7.1},
       {id:'prb1',name:'Home Runner',position:'RB',slot:'RB',points:14.3},
@@ -76,7 +76,7 @@ try {
   const nflNames={KC:'Kansas City Chiefs',DAL:'Dallas Cowboys',PHI:'Philadelphia Eagles',NYG:'New York Giants',BUF:'Buffalo Bills',MIA:'Miami Dolphins'};
   const nflEvent=(id,away,home,state)=>({id,date:'2026-09-20T17:00:00Z',competitions:[{competitors:[{homeAway:'away',score:'17',team:{abbreviation:away,displayName:nflNames[away]}},{homeAway:'home',score:'10',team:{abbreviation:home,displayName:nflNames[home]}}],status:{type:{state},period:3,displayClock:'8:24'}}]});
   await page.route('**/site/v2/sports/football/nfl/scoreboard',route=>route.fulfill({json:{events:[nflEvent('401772512','BUF','MIA','post'),nflEvent('401772510','KC','DAL','in'),nflEvent('401772511','PHI','NYG','pre'),...Array.from({length:13},(_,index)=>nflEvent(String(401772520+index),'PHI','NYG','pre'))]}}));
-  await page.route('**/site/v2/sports/football/nfl/summary?*',route=>route.fulfill({json:{drives:{previous:[{plays:[{id:'play-1',text:'T.Quarterback pass to O.Runner',wallclock:'2026-09-20T17:01:00Z',period:{number:3},clock:{displayValue:'8:24'}}]}]}}}));
+  await page.route('**/site/v2/sports/football/nfl/summary?*',route=>route.fulfill({json:{header:{competitions:[{competitors:[{team:{id:'1',abbreviation:'KC'}},{team:{id:'2',abbreviation:'DAL'}}],situation:{possession:'1',isRedZone:true}}]},drives:{previous:[{plays:[{id:'play-1',text:'T.Quarterback pass to O.Runner',scoringPlay:true,wallclock:new Date().toISOString(),period:{number:3},clock:{displayValue:'8:24'}}]}]}}}));
   await page.route('https://cdn.bsky.app/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#25c4e8"/></svg>'}));
   await page.route('https://video.bsky.app/**',route=>route.request().url().endsWith('.m3u8')?route.fulfill({contentType:'application/vnd.apple.mpegurl',body:'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST'}):route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#ff8a3d"/></svg>'}));
   await page.route('**/xrpc/app.bsky.feed.getAuthorFeed?*',route=>{const actor=new URL(route.request().url()).searchParams.get('actor');const updates={
@@ -148,6 +148,8 @@ try {
   assert.ok(await page.locator('.personal-score-team strong').evaluateAll(names=>names.every(name=>getComputedStyle(name).whiteSpace==='normal')),'fantasy team names should wrap instead of truncating');
   assert.match(await page.locator('.personal-score-center').first().innerText(),/101\.25\s*105\.00\s*VS\s*99\.50\s*107\.00/,'scores and pregame projections should meet in the middle');
   const firstCard=page.locator('.dashboard-matchup-card').filter({hasText:'Test Sunday League'}).first();
+  await firstCard.locator('.lineup-player[data-live-state="scored"]').filter({hasText:'Test Quarterback'}).waitFor();
+  assert.equal(await firstCard.locator('.lineup-player[data-live-state="redzone"]').filter({hasText:'Home Receiver'}).count(),1,'players on the possessing team should show the red-zone state');
   assert.equal(await firstCard.getByText('PTS',{exact:true}).count(),0,'league player scores should not repeat a points label');
   assert.ok(parseFloat(await firstCard.locator('.personal-score-total .projection-value').first().evaluate(value=>getComputedStyle(value).fontSize))>9,'fantasy team projections should be easier to read');
   assert.ok(parseFloat(await firstCard.locator('.lineup-player-scores .projection-value').first().evaluate(value=>getComputedStyle(value).fontSize))>9,'player projections should be easier to read');
@@ -271,7 +273,7 @@ try {
   for(const label of ['Plays','Ian Rapoport','ESPN','NFL wire']) assert.equal(await page.getByRole('button',{name:label}).getAttribute('aria-pressed'),'true',`${label} feed should start enabled`);
   assert.equal(await page.locator('.activity-list strong.nfl-you').textContent(),'T.Quarterback','activity should highlight your starter');
   assert.equal(await page.locator('.activity-list strong.nfl-opponent').textContent(),'O.Runner','activity should highlight the opposing starter');
-  assert.deepEqual(await page.locator('.activity-list > li').evaluateAll(items=>items.map(item=>item.querySelector('.activity-post-text')?.textContent??item.querySelector(':scope > span')?.textContent)),['[Schefter] Schefter update','Rapoport update','T.Quarterback pass to O.Runner','ESPN update'],'social posts and matchup plays should share one newest-first list');
+  assert.deepEqual(await page.locator('.activity-list > li').evaluateAll(items=>items.map(item=>item.querySelector('.activity-post-text')?.textContent??item.querySelector(':scope > span')?.textContent)),['T.Quarterback pass to O.Runner','[Schefter] Schefter update','Rapoport update','ESPN update'],'social posts and matchup plays should share one newest-first list');
   assert.equal(await page.locator('.activity-post header > img').count(),3,'social cards should show profile pictures');
   assert.equal(await page.locator('.activity-media img').count(),1,'social cards should show attached images');
   assert.equal(await page.locator('.activity-media video').count(),1,'social cards should show inline videos');

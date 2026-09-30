@@ -8,6 +8,7 @@
   "workers_dev": true,
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   "images": { "binding": "IMAGES" },
+  "kv_namespaces": [{ "binding": "NFL_NEWS_CACHE", "id": "2970e0a407f24eca8d6d977cd9132ca3" }],
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "toomanyleagues" }],
   "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": true, "head_sampling_rate": 1 }, "redact_query_string": true }
 }

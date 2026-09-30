@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fetchNflScoreboard, nflTeamLogoUrl, normalizeNflTeam, parseNflPlays, parseNflScoreboard } from '../lib/nfl';
+import { fetchNflScoreboard, nflSlateDateRange, nflSlateKey, nflTeamLogoUrl, normalizeNflTeam, parseNflLiveSituation, parseNflPlays, parseNflScoreboard } from '../lib/nfl';
 import { matchupPlays, startersInGame, startersMentioned } from '../lib/nfl-highlights';
 import type { LeagueSnapshot } from '../lib/types';
 
@@ -17,6 +17,12 @@ test('uses shared NFL logo URLs for normalized provider team names', () => {
   assert.equal(nflTeamLogoUrl('JAC'), '/nfl/JAX.png');
   assert.equal(nflTeamLogoUrl('Washington Commanders'), '/nfl/WSH.png');
   assert.equal(nflTeamLogoUrl('Unknown Team'), undefined);
+});
+
+test('rolls the NFL slate from Tuesday through Monday in Eastern time', () => {
+  assert.equal(nflSlateKey(new Date('2026-09-29T03:59:59Z')), '2026-09-22');
+  assert.equal(nflSlateKey(new Date('2026-09-29T04:00:00Z')), '2026-09-29');
+  assert.equal(nflSlateDateRange(new Date('2026-09-30T12:00:00Z')), '20260929-20261005');
 });
 
 test('parses scheduled, live, and final scoreboard states', () => {
@@ -59,6 +65,21 @@ test('requests the saved season and maps fantasy playoff weeks to the NFL postse
   }
 });
 
+test('requests the current Tuesday-to-Monday slate when no fantasy week is supplied', async () => {
+  const originalFetch = globalThis.fetch;
+  let requested: URL | undefined;
+  globalThis.fetch = async (input) => {
+    requested = new URL(String(input));
+    return Response.json({ events: [] });
+  };
+  try {
+    await fetchNflScoreboard();
+    assert.equal(requested?.searchParams.get('dates'), nflSlateDateRange());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('shows recent plays and identifies starters on each side of a fantasy matchup', () => {
   const game = parseNflScoreboard({ events: [{ id: '401772510', competitions: [{ competitors: [
     { homeAway: 'away', team: { abbreviation: 'DAL' } },
@@ -88,4 +109,30 @@ test('shows recent plays and identifies starters on each side of a fantasy match
   ]);
   assert.deepEqual(matchupPlays(plays, starters).map(({ play }) => play.id), ['2', '1']);
   assert.deepEqual(matchupPlays([{ ...plays[0], id: '3', text: 'Penalty on the defense' }], starters), []);
+});
+
+test('reads possession, red-zone state, and scoring plays from an NFL summary', () => {
+  const situation = parseNflLiveSituation({
+    header: { competitions: [{
+      competitors: [
+        { team: { id: '1', abbreviation: 'DAL' } },
+        { team: { id: '2', abbreviation: 'KC' } },
+      ],
+      situation: { possession: '2', isRedZone: true },
+    }] },
+    drives: { previous: [{ plays: [
+      { id: 'score', text: 'T.Quarterback pass complete for a touchdown', scoringPlay: true },
+      { id: 'next', text: 'Kickoff for a touchback' },
+    ] }] },
+  });
+  assert.equal(situation.possessionTeam, 'KC');
+  assert.equal(situation.redZone, true);
+  assert.deepEqual(situation.scoringPlays.map((play) => play.id), ['score']);
+
+  const driveFallback = parseNflLiveSituation({ drives: { current: {
+    team: { displayName: 'Dallas Cowboys' },
+    end: { yardsToEndzone: 19 },
+    plays: [],
+  } } });
+  assert.deepEqual(driveFallback, { possessionTeam: 'DAL', redZone: true, scoringPlays: [] });
 });

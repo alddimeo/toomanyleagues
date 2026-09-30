@@ -6,9 +6,11 @@ import { normalizeNflTeam, type NflGame } from "@/lib/nfl";
 import { playerStatPoints, playerStatsWithDefaults } from "@/lib/player-stats";
 import { teamProjectionState } from "@/lib/projections";
 import { ProjectionValue } from "@/components/ProjectionValue";
+import type { NflPlayerNews } from "@/lib/nfl-news";
 
 type Scoreboard = { games: NflGame[] };
 const scoreboardCache = new Map<string, { expiresAt: number; request: Promise<Scoreboard> }>();
+const newsCache = new Map<string, { expiresAt: number; request: Promise<NflPlayerNews[]> }>();
 
 function loadScoreboard(season: number, week: number) {
   const key = `${season}:${week}`;
@@ -22,6 +24,21 @@ function loadScoreboard(season: number, week: number) {
       return value as Scoreboard;
     });
   scoreboardCache.set(key, { expiresAt: Date.now() + 25_000, request });
+  return request;
+}
+
+function loadPlayerNews(player: string) {
+  const key = player.toLowerCase();
+  const cached = newsCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.request;
+  const request = fetch(`/api/nfl/player-news?player=${encodeURIComponent(player)}`, { credentials: "same-origin" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Player news unavailable");
+      const value = await response.json() as { news?: unknown };
+      if (!Array.isArray(value.news)) throw new Error("Invalid player news");
+      return value.news as NflPlayerNews[];
+    }).catch((error) => { newsCache.delete(key); throw error; });
+  newsCache.set(key, { expiresAt: Date.now() + 10 * 60_000, request });
   return request;
 }
 
@@ -104,6 +121,8 @@ export function PlayerGameStatus({ player, season, week }: { player: Player; sea
 export function PlayerDetailsButton({ player, season, week }: { player: Player; season: number; week: number }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
+  const [news, setNews] = useState<NflPlayerNews[] | null>(null);
+  const [newsError, setNewsError] = useState(false);
   const titleId = useId();
   const image = player.headshot && /^https?:\/\//i.test(player.headshot) ? player.headshot : null;
   const stats = Object.entries(playerStatsWithDefaults(player));
@@ -111,12 +130,22 @@ export function PlayerDetailsButton({ player, season, week }: { player: Player; 
   const points = typeof player.points === "number" && Number.isFinite(player.points) ? player.points.toFixed(2) : "—";
   const initials = player.name.trim().split(/\s+/).map((part) => part[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
 
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setNews(null);
+    setNewsError(false);
+    void loadPlayerNews(player.name).then((items) => { if (active) setNews(items); }).catch(() => { if (active) setNewsError(true); });
+    return () => { active = false; };
+  }, [open, player.name]);
+
   return <>
     <button className="player-name-button" type="button" aria-haspopup="dialog" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>{player.name}</button>
     <dialog className="player-modal" ref={dialog} aria-labelledby={titleId} onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }} onClose={() => setOpen(false)}>
       <div className="player-modal-head"><div><span className="player-modal-photo">{image ? <img src={image} alt={`${player.name} headshot`} /> : <span aria-hidden="true">{initials}</span>}</span><span><small>{player.position || "PLAYER"} · {player.nflTeam || "NFL"}</small><h2 id={titleId}>{player.name}</h2>{player.injuryStatus ? <em>{player.injuryStatus}</em> : null}</span></div><button type="button" aria-label="Close player details" onClick={() => dialog.current?.close()}>×</button></div>
       <div className="player-modal-summary"><span className="player-modal-metric"><small>Fantasy points</small><strong className="player-modal-points">{points}</strong></span><span className="player-modal-metric"><small>Projection</small>{open ? <PlayerProjection player={player} season={season} week={week} /> : null}</span><span className="player-modal-metric"><small>Lineup</small><strong>{player.slot || "Roster"}</strong></span></div>
       {open ? <PlayerGameStatus player={player} season={season} week={week} /> : null}
+      {open ? <section className="player-modal-news" aria-labelledby={`${titleId}-news`} aria-live="polite"><h3 id={`${titleId}-news`}>Latest news</h3>{newsError ? <p>Player news is temporarily unavailable.</p> : news === null ? <p>Loading player news…</p> : news.length ? <div>{news.map((item) => <article key={item.id}><small>{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(item.publishedAt))}</small><h4>{item.headline}</h4><p>{item.blurb}</p><a href={item.url} target="_blank" rel="noopener noreferrer">{item.source} ↗</a></article>)}</div> : <p>No update for this player in the latest news feeds.</p>}</section> : null}
       {stats.length ? <section className="player-modal-stats" aria-labelledby={`${titleId}-stats`}><h3 id={`${titleId}-stats`}>Game stats</h3><div>{stats.map(([label, value]) => <dl key={label}><dt>{label}</dt><dd>{String(value)}</dd><small>{statPoints[label] ? `${statPoints[label].toFixed(2)} fantasy pts` : "—"}</small></dl>)}</div></section> : null}
     </dialog>
   </>;

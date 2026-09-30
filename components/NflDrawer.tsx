@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { LeagueSnapshot } from "@/lib/types";
-import { nflTeamLogoUrl, parseNflPlays, parseNflScoreboard, type NflGame, type NflPlay } from "@/lib/nfl";
+import { nflSlateDateRange, nflTeamLogoUrl, parseNflPlays, parseNflScoreboard, type NflGame, type NflPlay } from "@/lib/nfl";
 import { startersInGame, startersMentioned } from "@/lib/nfl-highlights";
 
 const ESPN = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/";
@@ -51,7 +51,7 @@ export function NflDrawer({ leagues, onClose }: { leagues: LeagueSnapshot[]; onC
       if (document.visibilityState !== "visible" || inFlight) return;
       inFlight = true;
       try {
-        const nextGames = parseNflScoreboard(await espnJson("scoreboard", controller.signal));
+        const nextGames = parseNflScoreboard(await espnJson(`scoreboard?dates=${nflSlateDateRange()}`, controller.signal));
         setGames(nextGames);
         hasLiveGame = nextGames.some((game) => game.state === "live");
         setScoresError(false);

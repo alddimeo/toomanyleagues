@@ -448,6 +448,7 @@ tr:has(.player-game-status[data-state="scheduled"], .player-game-status[data-sta
 .team-detail-title .team-logo-wrap, .team-detail-title .team-logo, .team-detail-title .team-avatar { width: 52px; height: 52px; flex: 0 0 auto; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes player-scored { 50% { background: rgba(167, 232, 95, .36); box-shadow: inset 0 0 0 1px rgba(167, 232, 95, .42); } }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -806,6 +807,10 @@ tr:has(.player-game-status[data-state="scheduled"], .player-game-status[data-sta
 .lineup-bench-grid { align-items: start; padding-top: 8px; }
 .lineup-bench { min-width: 0; margin-top: 0; border-top: 1px solid var(--line); }
 .lineup-bench .lineup-player { background: rgba(5, 9, 14, .16); }
+.lineup-player.is-field, .lineup-bench .lineup-player.is-field { background: rgba(255, 209, 102, .11); }
+.lineup-player.is-redzone, .lineup-bench .lineup-player.is-redzone { background: rgba(255, 102, 112, .13); }
+.lineup-player.is-scored, .lineup-bench .lineup-player.is-scored { background: rgba(167, 232, 95, .2); animation: player-scored 1s ease-in-out 10; }
+.live-player-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .lineup-card .matchup-card-foot { margin: auto 16px 0; padding-bottom: 12px; }
 .team-logo-wrap, .team-logo, .team-avatar { width: 42px; height: 42px; }
 .team-logo { border-color: rgba(255, 138, 61, .52); border-radius: 5px; padding: 4px; background: rgba(255, 138, 61, .08); }
@@ -871,7 +876,7 @@ tr:has(.player-game-status[data-state="scheduled"], .player-game-status[data-sta
   .player-modal-stats > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-.player-modal { width: min(720px, calc(100% - 32px)); max-height: min(88vh, 820px); margin: auto; padding: 28px; overflow: auto; border: 1px solid rgba(93, 229, 255, .4); border-radius: 8px; background: radial-gradient(circle at 20% 0, rgba(93, 229, 255, .13), transparent 33%), linear-gradient(145deg, #162432, #0b141e); color: var(--ink); box-shadow: 0 28px 90px rgba(0, 0, 0, .62); }
+.player-modal { width: min(720px, calc(100% - 32px)); max-height: min(88vh, 820px); margin: auto; padding: 28px; overflow: auto; border: 1px solid rgba(93, 229, 255, .4); border-radius: 8px; background: radial-gradient(circle at 20% 0, rgba(93, 229, 255, .13), transparent 33%), linear-gradient(145deg, #162432, #0b141e); color: var(--ink); text-align: left; box-shadow: 0 28px 90px rgba(0, 0, 0, .62); }
 .player-modal::backdrop { background: rgba(2, 5, 8, .78); backdrop-filter: blur(4px); }
 .player-modal-head, .player-modal-head > div { display: flex; align-items: center; gap: 12px; }
 .player-modal-head { justify-content: space-between; }
@@ -890,6 +895,15 @@ tr:has(.player-game-status[data-state="scheduled"], .player-game-status[data-sta
 .player-modal-metric > small { color: var(--muted); font-size: 9px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
 .player-modal-metric strong, .player-modal-metric .projection-value { color: var(--ink); font: 900 24px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .player-modal-metric .projection-value { color: #fff; font-size: 15px; white-space: normal; }
+.player-modal-news { margin-top: 22px; }
+.player-modal-news > h3 { margin: 0 0 10px; font-size: 17px; }
+.player-modal-news > p { margin: 0; color: var(--faint); font-size: 11px; }
+.player-modal-news > div { display: grid; gap: 8px; }
+.player-modal-news article { padding: 13px 14px; border: 1px solid var(--line); border-radius: 4px; background: rgba(5, 9, 14, .22); }
+.player-modal-news article small { color: var(--faint); font-size: 9px; text-transform: uppercase; }
+.player-modal-news article h4 { margin: 4px 0 6px; font-size: 13px; }
+.player-modal-news article p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.player-modal-news article a { display: inline-block; margin-top: 7px; color: var(--electric); font-size: 10px; font-weight: 800; }
 .player-modal-stats { margin-top: 22px; }
 .player-modal-stats h3 { margin: 0 0 10px; font-size: 17px; }
 .player-modal-stats > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
