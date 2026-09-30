@@ -5,9 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { LeagueSnapshot, Provider } from "@/lib/types";
 import { Wordmark } from "@/components/Wordmark";
-import { formatPoints, leagueHref, LeagueBanner, MatchupGrid, TeamLogo } from "@/components/LeagueViews";
+import { formatPoints, leagueHref, LeagueBanner, MatchupGrid, PlayerHeadshot, TeamLogo } from "@/components/LeagueViews";
+import { PlayerDetailsButton } from "@/components/PlayerDetails";
 import { NflPanel } from "@/components/NflPanel";
+import { ActivityPanel } from "@/components/ActivityPanel";
 import { useLiveNflGames } from "@/components/useLiveNflGames";
+import { exposurePerformance, featuredPlayerExposure, filterPersonalMatchups, personalMatchups, playerExposure, sortPersonalMatchups, type ExposureMode, type MatchupFilter, type MatchupSort } from "@/lib/game-center";
 
 type Connection = { provider: Provider; status: string };
 type DashboardData = {
@@ -372,7 +375,7 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
 
           {notice && !extensionPending && !picker ? <div className={`dashboard-notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span aria-hidden="true">{notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i"}</span>{notice.text}<button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div> : null}
 
-          {focus === "overview" ? <div className="dashboard-game-layout"><section className="dashboard-matchups" aria-label="League matchups"><MatchupGrid leagues={data.leagues} personalOnly /></section></div> : focus === "leagues" ? <LeagueScores leagues={data.leagues} /> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
+          {focus === "overview" ? <GameCenter leagues={data.leagues} /> : focus === "leagues" ? <LeagueScores leagues={data.leagues} /> : focus === "help" ? <section className="help-faq" aria-labelledby="help-title"><h2 id="help-title">Frequently asked questions</h2>
             <details open><summary>What is the smaller number beneath a score?</summary><p>It is the latest fantasy point projection supplied by your connected provider. A dash means that provider has not supplied one.</p></details>
             <details><summary>What do the green and red changes mean?</summary><p>While a player or team is active, green with an up arrow means the current projection is higher than the saved pregame projection; red with a down arrow means it is lower. The number is always the current total projection.</p></details>
             <details><summary>Why is there no colored change for my league?</summary><p>We can save a pregame comparison only when a league is connected and projections are available before the first NFL game of the week starts. Leagues connected later still show available live projections, without a comparison for that week.</p></details>
@@ -393,8 +396,40 @@ export function DashboardShell({ focus = "overview" }: { focus?: "overview" | "l
         </div>
       </main>
       <NflPanel leagues={data.leagues} />
+      <ActivityPanel leagues={data.leagues} />
     </div>
   );
+}
+
+function GameCenter({ leagues }: { leagues: LeagueSnapshot[] }) {
+  const [filter, setFilter] = useState<MatchupFilter>('all');
+  const [sort, setSort] = useState<MatchupSort>('attention');
+  const [exposureMode, setExposureMode] = useState<ExposureMode>('starts');
+  const latestSeason = leagues.reduce((latest, league) => Math.max(latest, league.season), 0);
+  const currentLeagues = leagues.filter((league) => league.season === latestSeason);
+  const currentMatchups = personalMatchups(currentLeagues);
+  const visible = sortPersonalMatchups(filterPersonalMatchups(currentMatchups, filter), sort);
+  const allExposure = playerExposure(currentLeagues);
+  const exposure = featuredPlayerExposure(allExposure, exposureMode);
+  const currentWeek = currentLeagues.reduce((latest, league) => Math.max(latest, league.week), 0);
+  const counts = {
+    all: currentMatchups.length,
+    close: filterPersonalMatchups(currentMatchups, 'close').length,
+    behind: filterPersonalMatchups(currentMatchups, 'behind').length,
+    favored: filterPersonalMatchups(currentMatchups, 'favored').length,
+  };
+  return <div className="dashboard-game-layout">
+    <section className="dashboard-matchups matters-panel" aria-label="Current matchups">
+      {allExposure.length ? <details className="exposure-panel" open>
+        <summary><h2>Players to watch</h2></summary>
+        <div className="exposure-panel-body"><div className="exposure-mode-controls" aria-label="Choose featured player criteria">{([['starts', 'Most starts'], ['over', 'Overperformers'], ['under', 'Underperformers'], ['combined', 'Combined']] as [ExposureMode, string][]).map(([value, label]) => <button type="button" aria-pressed={exposureMode === value} onClick={() => setExposureMode(value)} key={value}>{label}</button>)}</div>
+          {exposure.length ? <div className="exposure-list">{exposure.map((item) => { const performance = exposurePerformance(item); return <article className="exposure-item" key={item.key}><span className="exposure-player"><PlayerHeadshot player={item.player} /><span><PlayerDetailsButton player={item.player} season={latestSeason} week={currentWeek} /><small>{[item.position, item.nflTeam].filter(Boolean).join(' · ')}</small></span></span><strong className="exposure-points">{formatPoints(item.player.points)}{performance !== undefined ? <em className={performance > 0 ? 'is-over' : performance < 0 ? 'is-under' : 'is-even'}>{performance > 0 ? '+' : performance < 0 ? '−' : ''}{Math.abs(performance).toFixed(1)}</em> : null}</strong><span className="exposure-leagues"><b>{item.leagues}</b><small>LEAGUES</small></span></article>; })}</div> : <div className="empty-inline exposure-empty"><span>◌</span><div><strong>No qualifying players yet</strong><p>Projection comparisons appear when providers return both points and projections.</p></div></div>}
+        </div>
+      </details> : null}
+      <div className="matchup-controls matchup-controls-only"><div className="matchup-control-fields"><div className="matchup-filters" aria-label="Filter matchups">{(['all', 'close', 'behind', 'favored'] as MatchupFilter[]).map((value) => { const label = value === 'all' ? 'All' : value[0].toUpperCase() + value.slice(1); return <button type="button" aria-label={`${label}, ${counts[value]} matchup${counts[value] === 1 ? '' : 's'}`} aria-pressed={filter === value} onClick={() => setFilter(value)} key={value}><span>{label}</span><b>{counts[value]}</b></button>; })}</div><label className="matchup-sort">Sort<select value={sort} onChange={(event) => setSort(event.target.value as MatchupSort)}><option value="attention">Needs attention</option><option value="closest">Closest</option><option value="league">League name</option></select></label></div></div>
+      {visible.length ? <MatchupGrid key={`${filter}:${sort}`} leagues={visible.map((item) => item.league)} personalOnly /> : <div className="empty-inline matchup-filter-empty"><span>◌</span><div><strong>No matchups match this filter</strong><p>Choose another view to bring the rest back.</p></div></div>}
+    </section>
+  </div>;
 }
 
 function LeagueScores({ leagues }: { leagues: LeagueSnapshot[] }) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fetchNflScoreboard, nflTeamLogoUrl, normalizeNflTeam, parseNflPlays, parseNflScoreboard } from '../lib/nfl';
-import { startersInGame, startersMentioned } from '../lib/nfl-highlights';
+import { matchupPlays, startersInGame, startersMentioned } from '../lib/nfl-highlights';
 import type { LeagueSnapshot } from '../lib/types';
 
 test('normalizes provider abbreviations and team names', () => {
@@ -86,4 +86,6 @@ test('shows recent plays and identifies starters on each side of a fantasy match
   assert.deepEqual(startersMentioned(inline, starters).map(({ side, start, end }) => [side, inline.slice(start, end)]), [
     ['opponent', 'J.Hurts'], ['you', 'D. Prescott'], ['opponent', 'J.Hurts'],
   ]);
+  assert.deepEqual(matchupPlays(plays, starters).map(({ play }) => play.id), ['2', '1']);
+  assert.deepEqual(matchupPlays([{ ...plays[0], id: '3', text: 'Penalty on the defense' }], starters), []);
 });

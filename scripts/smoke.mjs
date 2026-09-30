@@ -12,7 +12,7 @@ const fixture={user:{email:'tester@example.com'},connections:[{provider:'espn',s
   id:'123',provider:'espn',name:'Test Sunday League',logo:'https://cdn.example/league.png',season:2026,week:1,fetchedAt:new Date().toISOString(),
   teams:[
     {id:'1',name:'Test Home',isUserTeam:true,logo:'/api/espn/team-logo/123e4567-e89b-12d3-a456-426614174000',points:101.25,projection:112.5,pregameProjection:105,players:[
-      {id:'p1',name:'Test Quarterback',position:'QB',slot:'QB',nflTeam:'KC',points:24.5,projection:28.5,pregameProjection:25,stats:{'Passing yards':250},statPoints:{'Passing yards':10}},
+      {id:'p1',name:'Test Quarterback',position:'QB',slot:'QB',nflTeam:'KC',headshot:'https://cdn.example/player.png',points:24.5,projection:28.5,pregameProjection:25,stats:{'Passing yards':250},statPoints:{'Passing yards':10}},
       {id:'pwr1',name:'Home Receiver',position:'WR',slot:'WR',points:10.2,projection:16.09,pregameProjection:16.09},
       {id:'pwr1b',name:'Home Receiver Two',position:'WR',slot:'WR',points:8.2},
       {id:'pk1',name:'Home Kicker',position:'K',slot:'K',points:7.1},
@@ -23,20 +23,21 @@ const fixture={user:{email:'tester@example.com'},connections:[{provider:'espn',s
       {id:'pbench1',name:'Home Bench',position:'RB',slot:'BE',points:5.0},
     ]},
     {id:'2',name:'Test Away',logo:'/api/espn/team-logo/223e4567-e89b-12d3-a456-426614174000',points:99.5,projection:101,pregameProjection:107,players:[
-      {id:'p2',name:'Opponent Runner',position:'RB',slot:'RB',nflTeam:'DAL',points:18.25,stats:{'Rushing yards':98}},
+      {id:'p2',name:'Opponent Runner',position:'RB',slot:'RB',nflTeam:'DAL',points:18.25,pregameProjection:15,stats:{'Rushing yards':98}},
       {id:'pk2',name:'Away Kicker',position:'K',slot:'K',points:7.3},
       {id:'pflex2',name:'Away Flex',position:'TE',slot:'FLEX',points:11.7},
       {id:'pdef2',name:'Away Defense',position:'D/ST',slot:'D/ST',points:8.2},
       {id:'pte2',name:'Away Tight End',position:'TE',slot:'TE',points:6.9},
       {id:'pwr2',name:'Away Receiver',position:'WR',slot:'WR',points:13.4},
       {id:'pwr2b',name:'Away Receiver Two',position:'WR',slot:'WR',points:6.4},
-      {id:'pqb2',name:'Away Quarterback',position:'QB',slot:'QB',points:22.1},
+      {id:'pqb2',name:'Away Quarterback',position:'QB',slot:'QB',points:22.1,pregameProjection:24},
       {id:'pbench2',name:'Away Bench',position:'WR',slot:'BN',points:5.1},
     ]},
   ],matchups:[{home:'1',away:'2',homeWinProbability:61}],
 }]};
 fixture.leagues.push({...fixture.leagues[0],name:'Test Prior Season',season:2025});
 fixture.leagues.push({...fixture.leagues[0],id:'461.l.123',provider:'yahoo',name:'Test Yahoo League',logo:undefined,teams:fixture.leagues[0].teams.map(team=>({...team,logo:undefined}))});
+fixture.leagues[2].teams[0].projection=98;
 fixture.leagues.push({...fixture.leagues[2],id:'461.l.456',name:'Another Test Yahoo League'});
 fixture.leagues[3].teams=fixture.leagues[3].teams.map(team=>({...team,players:team.players.filter(player=>['QB','BE','BN'].includes(player.slot))}));
 try {
@@ -67,6 +68,7 @@ try {
   await page.screenshot({path:'test-results/login.png',fullPage:true});
   let refreshCalls=0, nflLive=false, nflScoreboardError=true;
   await page.route('**/league.png',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" fill="#25c4e8"/><text x="9" y="20" fill="black">L</text></svg>'}));
+  await page.route('**/player.png',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><circle cx="48" cy="48" r="48" fill="#25c4e8"/></svg>'}));
   await page.route('**/api/espn/team-logo/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="42" height="42"><rect width="42" height="42" fill="#25c4e8"/></svg>'}));
   await page.route('**/api/dashboard',route=>route.fulfill({json:fixture}));
   await page.route('**/api/refresh',route=>{refreshCalls++; return refreshCalls===1 ? route.fulfill({json:fixture}) : route.fulfill({status:409,json:{error:'ESPN authorization expired. Reconnect that account.'}});});
@@ -75,6 +77,13 @@ try {
   const nflEvent=(id,away,home,state)=>({id,date:'2026-09-20T17:00:00Z',competitions:[{competitors:[{homeAway:'away',score:'17',team:{abbreviation:away,displayName:nflNames[away]}},{homeAway:'home',score:'10',team:{abbreviation:home,displayName:nflNames[home]}}],status:{type:{state},period:3,displayClock:'8:24'}}]});
   await page.route('**/site/v2/sports/football/nfl/scoreboard',route=>route.fulfill({json:{events:[nflEvent('401772512','BUF','MIA','post'),nflEvent('401772510','KC','DAL','in'),nflEvent('401772511','PHI','NYG','pre'),...Array.from({length:13},(_,index)=>nflEvent(String(401772520+index),'PHI','NYG','pre'))]}}));
   await page.route('**/site/v2/sports/football/nfl/summary?*',route=>route.fulfill({json:{drives:{previous:[{plays:[{id:'play-1',text:'T.Quarterback pass to O.Runner',wallclock:'2026-09-20T17:01:00Z',period:{number:3},clock:{displayValue:'8:24'}}]}]}}}));
+  await page.route('https://cdn.bsky.app/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#25c4e8"/></svg>'}));
+  await page.route('https://video.bsky.app/**',route=>route.request().url().endsWith('.m3u8')?route.fulfill({contentType:'application/vnd.apple.mpegurl',body:'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST'}):route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#ff8a3d"/></svg>'}));
+  await page.route('**/xrpc/app.bsky.feed.getAuthorFeed?*',route=>{const actor=new URL(route.request().url()).searchParams.get('actor');const updates={
+    'rapsheet.bsky.social':['Ian Rapoport','Rapoport update','2026-09-20T17:02:00Z'],
+    'espn.com':['ESPN','ESPN update','2026-09-20T17:00:00Z'],
+    'nflnewsposter.bsky.social':['NFL News Poster','[Schefter] Schefter update','2026-09-20T17:03:00Z'],
+  };const [displayName,text,createdAt]=updates[actor];const embed=actor==='rapsheet.bsky.social'?{$type:'app.bsky.embed.video#view',playlist:'https://video.bsky.app/watch/test/playlist.m3u8',thumbnail:'https://video.bsky.app/watch/test/thumbnail.jpg'}:actor==='nflnewsposter.bsky.social'?{$type:'app.bsky.embed.images#view',images:[{thumb:'https://cdn.bsky.app/news.jpg',alt:'NFL news'}]}:undefined;route.fulfill({json:{feed:[{post:{uri:`at://did/app.bsky.feed.post/${actor.split('.')[0]}`,author:{handle:actor,displayName,avatar:`https://cdn.bsky.app/${actor}.jpg`},record:{text,createdAt},embed}}]}});});
   const initialFailedNflCheck=page.waitForResponse(response=>response.url().includes('/api/nfl/scoreboard')&&response.status()===503);
   await page.goto(`${base}/dashboard`);
   await initialFailedNflCheck;
@@ -99,16 +108,49 @@ try {
   await page.waitForTimeout(100);
   assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'a failed NFL check should keep the last confirmed live state');
   nflScoreboardError=false;
-  await page.getByText('Test Prior Season',{exact:true}).first().waitFor();
   await page.getByText('Test Yahoo League',{exact:true}).first().waitFor();
-  assert.equal(await page.locator('.league-logo:visible').count(),2,'league logos should render');
+  assert.equal(await page.getByRole('heading',{name:'Matchup outlook'}).count(),0,'dashboard should not reserve space for a matchup summary card');
+  assert.equal(await page.getByText('YOUR MATCHUPS',{exact:true}).count(),0,'matchup filters should not repeat a section heading');
+  assert.equal(await page.getByText(/leagues this week/).count(),0,'matchup filters should not repeat the league count');
+  assert.deepEqual(await page.locator('.matchup-filters button b').allTextContents(),['3','2','2','1'],'matchup counts should live in the filters');
+  assert.ok(await page.locator('.exposure-item').count()>0,'dashboard should show players shared across leagues');
+  assert.equal(await page.locator('.exposure-player .player-name-button').first().evaluate(name=>getComputedStyle(name).whiteSpace),'normal','featured player names should wrap instead of truncating');
+  assert.equal(await page.locator('.exposure-panel').evaluate(panel=>panel.open),true,'players to watch should be open by default');
+  await page.locator('.exposure-panel > summary').click();
+  assert.equal(await page.locator('.exposure-panel').evaluate(panel=>panel.open),false,'players to watch should collapse');
+  await page.locator('.exposure-panel > summary').click();
+  assert.ok(await page.locator('.exposure-panel').evaluate(panel=>panel.getBoundingClientRect().bottom<document.querySelector('.matchup-controls').getBoundingClientRect().top),'player exposure should appear above league matchups');
+  assert.ok(await page.locator('.exposure-points').count()>0,'player exposure cards should show fantasy points');
+  assert.equal(await page.locator('.exposure-panel').getByText('PTS',{exact:true}).count(),0,'featured cards should not label fantasy points');
+  assert.equal(await page.locator('.exposure-panel').getByText(/vs proj/).count(),0,'featured cards should show projection differences without extra copy');
+  assert.ok(await page.locator('.exposure-leagues').count()>0,'featured cards should show league counts');
+  assert.ok(await page.locator('.exposure-leagues').evaluateAll(values=>values.every(value=>value.textContent?.includes('LEAGUES')&&getComputedStyle(value).color==='rgb(255, 255, 255)')),'league counts should use a consistent white label');
+  assert.equal(await page.getByRole('button',{name:'Most starts'}).getAttribute('aria-pressed'),'true','most starts should be the default featured criteria');
+  assert.ok(await page.locator('.exposure-points em').count()>0,'most starts should include projection differences');
+  await page.getByRole('button',{name:'Overperformers'}).click();
+  assert.ok(await page.locator('.exposure-panel').getByRole('button',{name:'Opponent Runner'}).count()>0,'overperformers should beat their saved projection');
+  await page.getByRole('button',{name:'Underperformers'}).click();
+  assert.ok(await page.locator('.exposure-panel').getByRole('button',{name:'Away Quarterback'}).count()>0,'underperformers should trail their saved projection');
+  await page.getByRole('button',{name:'Combined'}).click();
+  assert.ok(await page.locator('.exposure-points em').count()>1,'combined criteria should show both projection directions');
+  await page.getByRole('button',{name:'Most starts'}).click();
+  await page.getByRole('button',{name:/^Behind,/}).click();
+  assert.equal(await page.locator('.dashboard-matchup-card').count(),2,'behind filter should use the projected matchup margin');
+  await page.getByRole('button',{name:/^All,/}).click();
+  assert.equal(await page.locator('.dashboard-matchup-card').count(),3,'all filter should restore every current-season matchup');
+  assert.equal(await page.getByText('Test Prior Season',{exact:true}).count(),0,'game center should leave archived seasons in the Leagues view');
+  assert.equal(await page.locator('.league-logo:visible').count(),1,'current league logos should render');
   assert.ok(await page.locator('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]:visible').count()>=2,'both ESPN fantasy team logos should render');
   await page.waitForFunction(()=>[...document.querySelectorAll('.personal-score-logo .team-logo[src^="/api/espn/team-logo/"]')].every(logo=>logo.complete&&logo.naturalWidth>0));
   assert.ok(await page.getByText('Test Quarterback',{exact:true}).count()>0);
+  assert.ok(await page.locator('.lineup-player .player-headshot:visible').count()>0,'lineup cards should show player headshots');
   assert.ok(await page.getByText('Opponent Runner',{exact:true}).count()>0,'opponent lineup should be visible');
   assert.ok(await page.getByText('99.50',{exact:true}).count()>0,'opponent score should be visible');
   assert.match(await page.locator('.personal-score-center').first().innerText(),/101\.25\s*105\.00\s*VS\s*99\.50\s*107\.00/,'scores and pregame projections should meet in the middle');
-  const firstCard=page.locator('.dashboard-matchup-card').first();
+  const firstCard=page.locator('.dashboard-matchup-card').filter({hasText:'Test Sunday League'}).first();
+  assert.equal(await firstCard.getByText('PTS',{exact:true}).count(),0,'league player scores should not repeat a points label');
+  assert.ok(parseFloat(await firstCard.locator('.personal-score-total .projection-value').first().evaluate(value=>getComputedStyle(value).fontSize))>9,'fantasy team projections should be easier to read');
+  assert.ok(parseFloat(await firstCard.locator('.lineup-player-scores .projection-value').first().evaluate(value=>getComputedStyle(value).fontSize))>9,'player projections should be easier to read');
   assert.equal((await firstCard.locator('.matchup-card-league small').innerText()).trim(),'ESPN','dashboard league source should omit the week');
   assert.equal((await firstCard.locator('.team-projection').first().innerText()).trim(),'105.00','pregame ESPN team totals should show the original projection');
   assert.equal((await firstCard.locator('.team-projection').last().innerText()).trim(),'107.00','pregame ESPN opponent totals should show the original projection');
@@ -122,47 +164,45 @@ try {
   assert.match(await firstCard.locator('.matchup-win-chance').innerText(),/61%/);
   assert.equal((await firstCard.locator('.matchup-win-chance').innerText()).trim(),'61%\n39%','win chance should show only the percentages');
   const lineupLabels=await firstCard.locator('.lineup-position-label').allTextContents();
-  assert.deepEqual(lineupLabels,['QB','WR','WR','RB','TE','FLEX','DEF','K'],'each starter slot should show its normalized position');
+  assert.deepEqual(lineupLabels,['QB','RB','WR','WR','TE','FLEX','DEF','K','BE'],'matchup slots should put running backs before receivers and label the bench');
   const playerOrder=await firstCard.locator('.lineup-position-row').evaluateAll(rows=>rows.flatMap(row=>Array.from(row.children[0]?.querySelectorAll('.player-name-button')??[]).map(player=>player.textContent?.trim())));
-  assert.deepEqual(playerOrder,['Test Quarterback','Home Receiver','Home Receiver Two','Home Runner','Home Tight End','Home Flex','Home Defense','Home Kicker'],'players should follow the shared position order');
+  assert.deepEqual(playerOrder,['Test Quarterback','Home Runner','Home Receiver','Home Receiver Two','Home Tight End','Home Flex','Home Defense','Home Kicker'],'players should follow the shared position order');
   const opponentRow=firstCard.locator('.lineup-position-row').filter({has:page.getByRole('button',{name:'Opponent Runner'})});
   const opponentOrder=await opponentRow.evaluate(row=>Object.fromEntries(['b','.player-team-mark','.player-name-button'].map(selector=>[selector,row.querySelector(`.lineup-player.is-away ${selector}`)?.getBoundingClientRect().left??Infinity])));
   assert.ok(opponentOrder.b<opponentOrder['.player-name-button']&&opponentOrder['.player-name-button']<opponentOrder['.player-team-mark'],'opponent NFL logo should sit right of the player name');
   assert.equal(await firstCard.locator('.lineup-player-copy > small:not(.player-game-status)').count(),0,'lineup positions should be shown in the center column');
   assert.equal(await firstCard.locator('.personal-score-team small, .matchup-lineups-head').count(),0,'personal matchup cards should omit team and lineup labels');
-  assert.equal(await page.getByText('Test Home',{exact:true}).count(),4,'team names should appear only once per card');
+  assert.equal(await page.getByText('Test Home',{exact:true}).count(),3,'team names should appear only once per current-season card');
   const benchPanels=firstCard.locator('.lineup-bench');
-  assert.equal(await benchPanels.count(),1,'both teams should share one bench disclosure');
-  assert.equal((await benchPanels.locator('summary').innerText()).trim(),'BENCH','bench toggle should show only its label');
-  assert.equal(await benchPanels.locator('summary').evaluate(summary=>getComputedStyle(summary).borderBottomWidth),'1px','closed bench label should have a bottom border');
-  await benchPanels.locator('summary').click();
-  assert.equal(await benchPanels.evaluate(panel=>panel.open),true,'bench toggle should open');
-  assert.equal(await benchPanels.locator('summary').evaluate(summary=>getComputedStyle(summary).borderBottomWidth),'0px','open bench label should not have a bottom border');
-  assert.equal(await benchPanels.getByRole('group',{name:'Your bench'}).isVisible(),true,'opening the bench should show your players');
-  assert.equal(await benchPanels.getByRole('group',{name:'Opponent bench'}).isVisible(),true,'opening the bench should show opponent players');
-  await benchPanels.locator('summary').click();
-  assert.equal(await benchPanels.evaluate(panel=>panel.open),false,'bench toggle should close both teams');
+  assert.equal(await benchPanels.count(),1,'both teams should share one bench section');
+  assert.equal(await benchPanels.locator('summary').count(),0,'the bench should not be collapsible');
+  assert.equal(await benchPanels.locator('.lineup-position-label').innerText(),'BE','the bench should use the abbreviated slot label');
+  assert.equal(await benchPanels.evaluate(panel=>getComputedStyle(panel).borderTopWidth),'1px','the bench should keep its divider');
+  assert.equal(await benchPanels.getByRole('group',{name:'Your bench'}).isVisible(),true,'your bench should always be visible');
+  assert.equal(await benchPanels.getByRole('group',{name:'Opponent bench'}).isVisible(),true,'the opponent bench should always be visible');
   const scrollGrid=page.locator('#dashboard-league-cards');
-  assert.equal(await scrollGrid.evaluate(grid=>Array.from(grid.children).filter(card=>card.getBoundingClientRect().right<=grid.getBoundingClientRect().right+1).length),3,'default view should fit three cards');
+  assert.equal(await scrollGrid.evaluate(grid=>{const bounds=grid.getBoundingClientRect();return Array.from(grid.children).filter(card=>{const box=card.getBoundingClientRect();return box.left>=bounds.left-1&&box.right<=bounds.right+1;}).length;}),2,'default view should give two cards enough room for readable player details');
   assert.equal(await page.locator('.matchup-scroll-arrow').count(),0,'matchup arrows should be absent');
   const topScroll=page.locator('.matchup-top-scroll');
-  assert.equal(await topScroll.isVisible(),true,'top scrollbar should appear when a fourth matchup is off screen');
+  assert.equal(await topScroll.isVisible(),true,'top scrollbar should appear when a third matchup is off screen');
   const cardStep=await scrollGrid.evaluate(grid=>{const first=grid.firstElementChild,next=first?.nextElementSibling;return first&&next?next.getBoundingClientRect().left-first.getBoundingClientRect().left:first?.getBoundingClientRect().width??0;});
-  await scrollGrid.evaluate((grid,step)=>{grid.scrollLeft=step;},cardStep);
-  await page.waitForFunction(step=>{const grid=document.querySelector('#dashboard-league-cards');return !!grid&&Math.abs(grid.scrollLeft-step)<2;},cardStep);
+  const expectedScroll=await scrollGrid.evaluate((grid,step)=>{grid.scrollLeft=step;return Math.min(step,grid.scrollWidth-grid.clientWidth);},cardStep);
+  await page.waitForFunction(step=>{const grid=document.querySelector('#dashboard-league-cards');return !!grid&&Math.abs(grid.scrollLeft-step)<2;},expectedScroll);
   await page.waitForFunction(()=>{const grid=document.querySelector('#dashboard-league-cards'),top=document.querySelector('.matchup-top-scroll');return !!grid&&!!top&&Math.abs(top.scrollLeft-grid.scrollLeft)<2;});
   await topScroll.evaluate(element=>{element.scrollLeft=0;});
   await page.waitForFunction(()=>{const grid=document.querySelector('#dashboard-league-cards');return !!grid&&grid.scrollLeft<1;});
   const regularCardWidth=await firstCard.evaluate(card=>card.getBoundingClientRect().width);
   await page.screenshot({path:'test-results/dashboard-regular.png',fullPage:true});
+  await page.evaluate(()=>scrollTo(0,0));
   const closedNflButton=await page.getByRole('button',{name:'Open NFL scores'}).boundingBox();
   const toolbar=await page.locator('.dashboard-topbar').boundingBox();
-  const heading=await page.getByRole('heading',{name:'Matchups'}).boundingBox();
+  const heading=await page.getByRole('heading',{name:'Matchups',level:1}).boundingBox();
   assert.ok(closedNflButton.y>=toolbar.y+toolbar.height&&Math.abs(closedNflButton.y-heading.y)<15,'closed NFL control should sit below the toolbar beside Matchups');
   assert.ok(closedNflButton.height>closedNflButton.width*2,'NFL control should be vertically rectangular');
   assert.equal(await page.locator('.nfl-vertical-field').count(),0,'NFL control should have no football graphic');
   await page.getByRole('button',{name:'Open NFL scores'}).click();
   await page.locator('.nfl-game').first().waitFor();
+  assert.ok(await page.getByRole('button',{name:'Open activity feed'}).evaluate(button=>button.getBoundingClientRect().left-document.querySelector('.dashboard-content').getBoundingClientRect().right>=8),'closed activity control should leave space beside content when NFL scores are open');
   const openNflButton=await page.locator('.nfl-drawer-head .nfl-vertical-button').boundingBox();
   const liveScoresHeading=await page.getByRole('heading',{name:'Live Scores'}).boundingBox();
   assert.ok(openNflButton.x>liveScoresHeading.x+liveScoresHeading.width&&openNflButton.height>openNflButton.width*2,'open NFL control should sit to the right of Live Scores');
@@ -177,7 +217,7 @@ try {
   await showPlayers.check();
   assert.equal(await page.getByText('Both across leagues').count(),1,'legend should explain blue highlights');
   const legendPositions=await page.locator('.nfl-drawer-legend').evaluate(legend=>Array.from(legend.querySelectorAll('label, .nfl-drawer-key span')).map(item=>({text:item.textContent,top:item.getBoundingClientRect().top,width:item.getBoundingClientRect().width})));
-  assert.ok(legendPositions.every(item=>Math.abs(item.top-legendPositions[0].top)<4),`slider and color key should share a row: ${JSON.stringify(legendPositions)}`);
+  assert.ok(Math.max(...legendPositions.map(item=>item.top))-Math.min(...legendPositions.map(item=>item.top))<25,`slider and color key should stay compact: ${JSON.stringify(legendPositions)}`);
   assert.ok(await page.locator('.nfl-game-starters').count()>0,'the toggle should show starters on games');
   await showPlayers.uncheck();
   assert.equal(await page.locator('.nfl-game-starters').count(),0,'the toggle should hide starters again');
@@ -185,9 +225,7 @@ try {
   assert.deepEqual(await page.locator('.nfl-game-status').evaluateAll(statuses=>statuses.slice(0,3).map(status=>getComputedStyle(status).color)),['rgb(167, 232, 95)','rgb(242, 246, 244)','rgb(242, 246, 244)'],'live games should be green and scheduled or final games white');
   assert.equal(await page.locator('.nfl-game-team img').count(),32,'every team should have a logo');
   assert.equal(await page.getByText('Kansas City Chiefs').count(),1,'full NFL team names should be visible');
-  const nflPositions=await page.locator('.nfl-game').evaluateAll(games=>games.slice(0,2).map(game=>({x:game.getBoundingClientRect().x,y:game.getBoundingClientRect().y})));
-  assert.equal(nflPositions[0].y,nflPositions[1].y,'games should appear two across');
-  assert.ok(nflPositions[0].x<nflPositions[1].x,'games should read left to right');
+  const nflColumnsBefore=await page.locator('.nfl-game').evaluateAll(games=>new Set(games.slice(0,5).map(game=>Math.round(game.getBoundingClientRect().x))).size);
   assert.match(await page.locator('.nfl-drawer-games').evaluate(games=>getComputedStyle(games).scrollbarColor),/255, 138, 61/,'NFL game scrollbar should use the orange accent');
   assert.ok(await page.locator('.nfl-drawer').evaluate(drawer=>drawer.getBoundingClientRect().right<document.querySelector('.dashboard-matchups').getBoundingClientRect().left),'NFL drawer should sit to the left of matchups');
   assert.ok(await page.locator('.nfl-drawer').evaluate(drawer=>Math.abs(drawer.getBoundingClientRect().bottom-innerHeight)<2),'NFL drawer should span to the bottom of the screen');
@@ -206,6 +244,7 @@ try {
   await page.mouse.move(740,farGrip.y+120,{steps:5});
   await page.mouse.up();
   assert.ok(await page.locator('.nfl-drawer').evaluate(drawer=>drawer.getBoundingClientRect().width)>700,'divider should drag substantially beyond the old width limit');
+  assert.ok(await page.locator('.nfl-game').evaluateAll((games,before)=>new Set(games.slice(0,5).map(game=>Math.round(game.getBoundingClientRect().x))).size>before,nflColumnsBefore),'wider NFL drawers should fit more game tiles per row');
   assert.equal(await page.getByRole('button',{name:/Compact View/}).count(),0,'compact view control should be gone');
   assert.ok(await firstCard.evaluate(card=>card.getBoundingClientRect().width)>0,'matchups should remain visible beside NFL scores');
   await page.locator('.nfl-game-button').first().click();
@@ -217,10 +256,38 @@ try {
   await page.getByRole('button',{name:'Close NFL scores'}).click();
   assert.equal(await page.getByRole('button',{name:/Compact View/}).count(),0,'closing NFL scores should keep regular leagues');
   assert.ok(await firstCard.evaluate(card=>card.getBoundingClientRect().width)>=regularCardWidth-1,'regular card width should be restored');
+  const closedActivityButton=await page.getByRole('button',{name:'Open activity feed'}).boundingBox();
+  assert.ok(closedActivityButton.x>toolbar.x+toolbar.width-closedActivityButton.width-2&&closedActivityButton.height>closedActivityButton.width*2,'activity control should sit vertically on the right edge');
+  await page.getByRole('button',{name:'Open activity feed'}).click();
+  await page.getByText('T.Quarterback pass to O.Runner').waitFor();
+  assert.ok(await page.getByRole('button',{name:'Open NFL scores'}).evaluate(button=>document.querySelector('.dashboard-content').getBoundingClientRect().left-button.getBoundingClientRect().right>=8),'closed NFL control should leave space beside content when activity is open');
+  assert.ok(await page.getByRole('button',{name:'Close activity feed'}).evaluate(button=>button.getBoundingClientRect().left-document.querySelector('.activity-drawer').getBoundingClientRect().left<30),'activity close control should sit on the drawer’s inside edge');
+  assert.equal(await page.getByText('LIVE INTEL').count(),0,'activity feed should not show the old label');
+  assert.equal(await page.locator('.activity-section-head span').count(),0,'activity feed should not show an update count');
+  for(const label of ['Plays','Ian Rapoport','ESPN','NFL wire']) assert.equal(await page.getByRole('button',{name:label}).getAttribute('aria-pressed'),'true',`${label} feed should start enabled`);
+  assert.equal(await page.locator('.activity-list strong.nfl-you').textContent(),'T.Quarterback','activity should highlight your starter');
+  assert.equal(await page.locator('.activity-list strong.nfl-opponent').textContent(),'O.Runner','activity should highlight the opposing starter');
+  assert.deepEqual(await page.locator('.activity-list > li').evaluateAll(items=>items.map(item=>item.querySelector('.activity-post-text')?.textContent??item.querySelector(':scope > span')?.textContent)),['[Schefter] Schefter update','Rapoport update','T.Quarterback pass to O.Runner','ESPN update'],'social posts and matchup plays should share one newest-first list');
+  assert.equal(await page.locator('.activity-post header > img').count(),3,'social cards should show profile pictures');
+  assert.equal(await page.locator('.activity-media img').count(),1,'social cards should show attached images');
+  assert.equal(await page.locator('.activity-media video').count(),1,'social cards should show inline videos');
+  await page.getByRole('button',{name:'Ian Rapoport'}).click();
+  assert.equal(await page.locator('.activity-post-text',{hasText:'Rapoport update'}).count(),0,'feed toggles should hide their source');
+  await page.getByRole('button',{name:'Ian Rapoport'}).click();
+  assert.match(await page.locator('.activity-sources').textContent(),/unofficial NFL wire/,'the Schefter mirror should be disclosed');
+  assert.ok(await page.locator('.activity-drawer').evaluate(drawer=>drawer.getBoundingClientRect().left>document.querySelector('.dashboard-matchups').getBoundingClientRect().right),'activity drawer should sit to the right of matchups');
+  const activityBefore=await page.locator('.activity-drawer').evaluate(drawer=>drawer.getBoundingClientRect().width);
+  const activityGrip=await page.getByRole('separator',{name:'Resize activity feed'}).boundingBox();
+  await page.mouse.move(activityGrip.x+activityGrip.width/2,activityGrip.y+120);
+  await page.mouse.down();
+  await page.mouse.move(activityGrip.x+activityGrip.width/2-80,activityGrip.y+120,{steps:5});
+  await page.mouse.up();
+  assert.ok(await page.locator('.activity-drawer').evaluate(drawer=>drawer.getBoundingClientRect().width)>=activityBefore+70,'dragging the activity divider should widen the feed');
+  await page.screenshot({path:'test-results/dashboard-activity.png',fullPage:true});
+  await page.getByRole('button',{name:'Close activity feed'}).click();
   assert.ok(parseFloat(await firstCard.locator('.lineup-player-copy .player-game-status').first().evaluate(status=>getComputedStyle(status).fontSize))>8,'lineup game time should use the freed space');
   await page.locator('.player-game-status').filter({hasText:/Sep 13.*(?:AM|PM)/}).first().waitFor();
-  const cardHeights=await page.locator('.dashboard-matchup-card').evaluateAll(cards=>cards.map(card=>Math.round(card.getBoundingClientRect().height)));
-  assert.equal(new Set(cardHeights).size,1,'matchup cards should match the tallest card');
+  assert.ok(await page.locator('.dashboard-matchup-card').evaluateAll(cards=>cards.every(card=>card.getBoundingClientRect().height>0)),'matchup cards should size to their own content');
   const benchGaps=await page.locator('.dashboard-matchup-card').evaluateAll(cards=>cards.map(card=>{const rows=card.querySelectorAll('.lineup-position-row'),bench=card.querySelector('.lineup-bench');return bench&&rows.length?bench.getBoundingClientRect().top-rows[rows.length-1].getBoundingClientRect().bottom:null;}));
   assert.ok(benchGaps.every(gap=>gap!==null&&Math.abs(gap)<2),'each bench should follow its active lineup');
   assert.equal(await page.getByRole('button',{name:'Refresh Lineups'}).count(),0,'live updates should run without a manual control');
@@ -229,8 +296,9 @@ try {
   const playerDialog=page.getByRole('dialog',{name:'Test Quarterback'});
   await playerDialog.waitFor();
   await playerDialog.getByText('Passing yards').waitFor();
-  assert.equal(await playerDialog.getByRole('cell',{name:'10.00'}).count(),1,'player stats should show their fantasy-point contribution');
+  assert.equal(await playerDialog.getByText('10.00 fantasy pts',{exact:true}).count(),1,'player stats should show their fantasy-point contribution');
   await playerDialog.locator('.player-game-status').filter({hasText:/Sep 13.*(?:AM|PM)/}).waitFor();
+  assert.equal(await playerDialog.locator('.player-modal-metric .projection-value').evaluate(value=>getComputedStyle(value).color),'rgb(255, 255, 255)','player modal projection should be white');
   await page.screenshot({path:'test-results/player-modal.png'});
   await playerDialog.getByRole('button',{name:'Close player details'}).click();
   await page.getByRole('alert').filter({hasText:/authorization expired/}).waitFor();
@@ -368,10 +436,10 @@ try {
   assert.ok(await page.locator('.league-scores-rows').first().evaluate(rows=>{const first=rows.children[0].getBoundingClientRect(),second=rows.children[1].getBoundingClientRect();return second.top>first.top&&rows.scrollWidth<=rows.clientWidth;}),'score cards should stack on phones without horizontal scrolling');
   await page.screenshot({path:'test-results/leagues-mobile.png',fullPage:true});
   await page.setViewportSize({width:1440,height:1000});
-  fixture.leagues.pop();
+  fixture.leagues.splice(-2);
   await page.goto(`${base}/dashboard`);
   await page.getByText('Test Sunday League',{exact:true}).first().waitFor();
-  assert.equal(await page.locator('.matchup-top-scroll').isVisible(),false,'top scrollbar should hide when all three matchups fit');
+  assert.equal(await page.locator('.matchup-top-scroll').isVisible(),false,'top scrollbar should hide when both matchups fit');
   await page.route('**/api/refresh',route=>route.fulfill({json:fixture}));
   await page.reload();
   const liveStatus=page.locator('.dashboard-heading .dashboard-live-status');

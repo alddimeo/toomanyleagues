@@ -57,7 +57,7 @@ export function LeagueBanner({ league }: { league: LeagueSnapshot }) {
   </Link>;
 }
 
-function PlayerHeadshot({ player }: { player: Player }) {
+export function PlayerHeadshot({ player }: { player: Player }) {
   const image = safeImageUrl(player.headshot);
   return image
     ? <span className="player-headshot-wrap"><img className="player-headshot" src={image} alt={`${player.name} headshot`} loading="lazy" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.hidden = true; const fallback = event.currentTarget.nextElementSibling; if (fallback instanceof HTMLElement) fallback.hidden = false; }} /><span className="player-headshot-fallback" hidden aria-hidden="true">{initials(player.name)}</span></span>
@@ -89,11 +89,11 @@ function Scoreboard({ league, home, away, homeLabel, awayLabel, homeWinProbabili
     </div> : null}</>;
 }
 
-type PositionGroup = "QB" | "WR" | "RB" | "TE" | "FLEX" | "Defense" | "Kicker" | "Other";
+type PositionGroup = "QB" | "RB" | "WR" | "TE" | "FLEX" | "Defense" | "Kicker" | "Other";
 const POSITION_GROUPS: { key: PositionGroup; label: string }[] = [
   { key: "QB", label: "QB" },
-  { key: "WR", label: "WR" },
   { key: "RB", label: "RB" },
+  { key: "WR", label: "WR" },
   { key: "TE", label: "TE" },
   { key: "FLEX", label: "FLEX" },
   { key: "Defense", label: "DEF" },
@@ -119,14 +119,14 @@ function positionGroup(player: Player): PositionGroup {
 
 function positionGroups(players: Player[]) {
   const grouped: Record<PositionGroup, Player[]> = {
-    QB: [], WR: [], RB: [], TE: [], FLEX: [], Defense: [], Kicker: [], Other: [],
+    QB: [], RB: [], WR: [], TE: [], FLEX: [], Defense: [], Kicker: [], Other: [],
   };
   for (const player of players) grouped[positionGroup(player)].push(player);
   return POSITION_GROUPS.flatMap(({ key, label }) => grouped[key].length ? [{ key, label, players: grouped[key] }] : []);
 }
 
 function LineupPlayer({ player, league, away = false }: { player: Player; league: LeagueSnapshot; away?: boolean }) {
-  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
+  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-person"><PlayerHeadshot player={player} /><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
 }
 
 function MatchupLineups({ league, userTeam, opponent, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; neutral?: boolean }) {
@@ -155,14 +155,13 @@ function MatchupLineups({ league, userTeam, opponent, neutral = false }: { leagu
       <div className="lineup-position-label">{label}</div>
       <div className="lineup-position-cell">{away?.players[index] ? <LineupPlayer player={away.players[index]} league={league} away /> : null}</div>
     </div>))}
-    {(homeBench.length || awayBench.length) ? <details className="lineup-bench">
-      <summary>Bench</summary>
+    {(homeBench.length || awayBench.length) ? <div className="lineup-bench">
       <div className="lineup-bench-grid">
         <div className="lineup-players" role="group" aria-label={neutral ? "Home bench" : "Your bench"}>{positionGroups(homeBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} />)}</div>
-        <div aria-hidden="true" />
+        <div className="lineup-position-label">BE</div>
         {opponent ? <div className="lineup-players" role="group" aria-label={neutral ? "Away bench" : "Opponent bench"}>{positionGroups(awayBench).flatMap((group) => group.players).map((player) => <LineupPlayer key={player.id} player={player} league={league} away />)}</div> : null}
       </div>
-    </details> : null}
+    </div> : null}
   </div>;
 }
 
@@ -209,7 +208,9 @@ export function MatchupGrid({ leagues, personalOnly = false, initialMatchup, lay
     const top = topScrollRef.current;
     const track = topTrackRef.current;
     if (!grid || !top || !track) return;
-    let lastFromGrid = grid.scrollLeft;
+    grid.scrollLeft = 0;
+    top.scrollLeft = 0;
+    let lastFromGrid = 0;
     const syncSize = () => {
       track.style.width = `${grid.scrollWidth}px`;
       top.hidden = grid.scrollWidth <= grid.clientWidth + 1;

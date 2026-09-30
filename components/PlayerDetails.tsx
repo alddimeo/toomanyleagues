@@ -109,14 +109,15 @@ export function PlayerDetailsButton({ player, season, week }: { player: Player; 
   const stats = Object.entries(playerStatsWithDefaults(player));
   const statPoints = playerStatPoints(player);
   const points = typeof player.points === "number" && Number.isFinite(player.points) ? player.points.toFixed(2) : "—";
+  const initials = player.name.trim().split(/\s+/).map((part) => part[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
 
   return <>
     <button className="player-name-button" type="button" aria-haspopup="dialog" onClick={() => { dialog.current?.showModal(); setOpen(true); }}>{player.name}</button>
     <dialog className="player-modal" ref={dialog} aria-labelledby={titleId} onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }} onClose={() => setOpen(false)}>
-      <div className="player-modal-head"><div>{image ? <img src={image} alt="" /> : null}<span><small>{player.position || "PLAYER"} · {player.nflTeam || "NFL"}</small><h2 id={titleId}>{player.name}</h2></span></div><button type="button" aria-label="Close player details" onClick={() => dialog.current?.close()}>×</button></div>
-      <div className="player-modal-summary"><span>{player.slot || "Roster"}</span><strong><span className="player-modal-points">{points}</span> fantasy points</strong></div>
-      {open ? <><PlayerProjection player={player} season={season} week={week} /><PlayerGameStatus player={player} season={season} week={week} /></> : null}
-      {stats.length ? <table className="player-modal-stats"><thead><tr><th scope="col">Stat</th><th scope="col">Value</th><th scope="col">Fantasy pts</th></tr></thead><tbody>{stats.map(([label, value]) => <tr key={label}><th scope="row">{label}</th><td>{String(value)}</td><td>{statPoints[label] ? statPoints[label].toFixed(2) : "—"}</td></tr>)}</tbody></table> : null}
+      <div className="player-modal-head"><div><span className="player-modal-photo">{image ? <img src={image} alt={`${player.name} headshot`} /> : <span aria-hidden="true">{initials}</span>}</span><span><small>{player.position || "PLAYER"} · {player.nflTeam || "NFL"}</small><h2 id={titleId}>{player.name}</h2>{player.injuryStatus ? <em>{player.injuryStatus}</em> : null}</span></div><button type="button" aria-label="Close player details" onClick={() => dialog.current?.close()}>×</button></div>
+      <div className="player-modal-summary"><span className="player-modal-metric"><small>Fantasy points</small><strong className="player-modal-points">{points}</strong></span><span className="player-modal-metric"><small>Projection</small>{open ? <PlayerProjection player={player} season={season} week={week} /> : null}</span><span className="player-modal-metric"><small>Lineup</small><strong>{player.slot || "Roster"}</strong></span></div>
+      {open ? <PlayerGameStatus player={player} season={season} week={week} /> : null}
+      {stats.length ? <section className="player-modal-stats" aria-labelledby={`${titleId}-stats`}><h3 id={`${titleId}-stats`}>Game stats</h3><div>{stats.map(([label, value]) => <dl key={label}><dt>{label}</dt><dd>{String(value)}</dd><small>{statPoints[label] ? `${statPoints[label].toFixed(2)} fantasy pts` : "—"}</small></dl>)}</div></section> : null}
     </dialog>
   </>;
 }

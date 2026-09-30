@@ -1,6 +1,6 @@
 import type { LeagueSnapshot } from './types';
 import { isBench } from './projections';
-import { normalizeNflTeam, type NflGame } from './nfl';
+import { normalizeNflTeam, type NflGame, type NflPlay } from './nfl';
 
 export type HighlightedStarter = { name: string; nflTeam: string; side: 'you' | 'opponent' | 'both' };
 
@@ -43,5 +43,12 @@ export function startersMentioned(text: string, starters: HighlightedStarter[]):
     if (match.start < end) return false;
     end = match.end;
     return true;
+  });
+}
+
+export function matchupPlays(plays: NflPlay[], starters: HighlightedStarter[]) {
+  return plays.flatMap((play) => {
+    const players = startersMentioned(play.text, starters);
+    return players.length ? [{ play, players }] : [];
   });
 }
