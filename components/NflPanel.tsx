@@ -5,7 +5,7 @@ import type { LeagueSnapshot } from "@/lib/types";
 import { NflDrawer } from "@/components/NflDrawer";
 
 const MIN_WIDTH = 320;
-const DEFAULT_WIDTH = 390;
+const DEFAULT_WIDTH = 320;
 const widthLimit = () => Math.max(MIN_WIDTH, Math.min(900, (typeof window === "undefined" ? 1416 : window.innerWidth) - 656));
 const clampWidth = (width: number) => Math.min(widthLimit(), Math.max(MIN_WIDTH, width));
 

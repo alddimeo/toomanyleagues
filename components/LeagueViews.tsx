@@ -126,7 +126,7 @@ function positionGroups(players: Player[]) {
 }
 
 function LineupPlayer({ player, league, away = false }: { player: Player; league: LeagueSnapshot; away?: boolean }) {
-  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-person"><PlayerHeadshot player={player} /><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
+  return <div className={`lineup-player${away ? " is-away" : ""}`}><span className="lineup-player-person"><span className="lineup-player-copy"><span className="lineup-player-name"><PlayerDetailsButton player={player} season={league.season} week={league.week} /><NflTeamMark player={player} /></span><PlayerGameStatus player={player} season={league.season} week={league.week} /></span></span><span className="lineup-player-scores"><b>{formatPoints(player.points)}</b><PlayerProjection player={player} season={league.season} week={league.week} /></span></div>;
 }
 
 function MatchupLineups({ league, userTeam, opponent, neutral = false }: { league: LeagueSnapshot; userTeam: Team | undefined; opponent: Team | undefined; neutral?: boolean }) {
